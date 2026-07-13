@@ -1,0 +1,27 @@
+name: 功能建议
+description: 提议一个边界清晰、不会降低隐私保护的改进
+title: "[Feature]: "
+labels:
+  - "enhancement"
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: 使用场景
+      description: 现在遇到了什么问题？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 描述期望行为，不要附带真实账号或对话数据。
+    validations:
+      required: true
+  - type: checkboxes
+    id: network
+    attributes:
+      label: 数据边界
+      options:
+        - label: 我已说明该功能是否需要新增网络请求或读取新的本机数据。
+          required: true

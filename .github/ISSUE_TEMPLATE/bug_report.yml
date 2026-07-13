@@ -1,0 +1,49 @@
+name: Bug 报告
+description: 报告可以稳定复现的 CodexBar 问题
+title: "[Bug]: "
+labels:
+  - "bug"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。不要粘贴 access token、refresh token、API key、account ID、
+        `auth.json`、`credentials.dat`、rollout 或未经检查的原始日志。
+        涉及安全漏洞时请使用仓库的私密安全报告入口。
+  - type: input
+    id: version
+    attributes:
+      label: CodexBar 版本
+      placeholder: "例如 0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: 运行方式
+      options:
+        - GitHub Release EXE
+        - 源码与 uv
+        - 本地自行打包
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题与复现步骤
+      description: 说明期望结果、实际结果和最短复现步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 脱敏诊断
+      description: 可粘贴“导出脱敏诊断信息”的相关片段；提交前仍请人工检查。
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已确认内容中没有凭据、私人对话和本机用户目录。
+          required: true

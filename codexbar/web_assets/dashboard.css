@@ -1,0 +1,703 @@
+:root {
+  --bg: #111315;
+  --panel: #191c1f;
+  --panel-soft: #202429;
+  --line: #30363d;
+  --text: #ece7dd;
+  --muted: #8e969e;
+  --cyan: #76d9e6;
+  --amber: #e8b451;
+  --violet: #a99cff;
+  --coral: #f36f63;
+  --shadow: rgba(0, 0, 0, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  height: 100%;
+  padding: 22px 0;
+  overflow: hidden;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px) 0 0 / 32px 32px,
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px) 0 0 / 32px 32px,
+    var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+button {
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 13px;
+  cursor: pointer;
+  font: 600 13px "Segoe UI", system-ui, sans-serif;
+}
+
+button:hover {
+  border-color: var(--cyan);
+}
+
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px) 0 0 / 28px 28px,
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px) 0 0 / 28px 28px,
+    rgba(17, 19, 21, 0.98);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.loading-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.loading-overlay.done {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading-console {
+  width: min(620px, calc(100vw - 64px));
+  border: 1px solid var(--line);
+  background: rgba(25, 28, 31, 0.96);
+  box-shadow: 0 24px 54px var(--shadow);
+  padding: 28px 30px 26px;
+  border-radius: 12px;
+}
+
+.loading-eyebrow {
+  color: var(--cyan);
+  font: 700 11px "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.loading-console h2 {
+  margin: 6px 0 22px;
+  font: 700 28px "Bahnschrift SemiBold", "Segoe UI", sans-serif;
+}
+
+.loading-progress {
+  height: 16px;
+  border: 1px solid var(--line);
+  background: #0b0d0f;
+  overflow: hidden;
+}
+
+.loading-progress-fill {
+  width: 1%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--cyan), #b8f3f8);
+  transition: width 160ms ease;
+}
+
+.token-tape {
+  height: 18px;
+  margin-top: 10px;
+  border-bottom: 1px solid rgba(118, 217, 230, 0.24);
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(118, 217, 230, 0.52) 0,
+      rgba(118, 217, 230, 0.52) 1px,
+      transparent 1px,
+      transparent 12px
+    );
+}
+
+.loading-readout {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 16px;
+  align-items: baseline;
+  margin-top: 18px;
+}
+
+.loading-readout span,
+.loading-detail {
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.loading-readout span {
+  color: var(--cyan);
+  font-size: 22px;
+}
+
+.loading-readout strong {
+  font-size: 16px;
+}
+
+.loading-detail {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.loading-retry {
+  display: none;
+  margin-top: 18px;
+}
+
+.loading-overlay.failed .loading-progress-fill {
+  background: var(--coral);
+}
+
+.loading-overlay.failed .loading-retry {
+  display: inline-block;
+}
+
+.shell {
+  width: min(1680px, calc(100vw - 32px));
+  margin: 0 auto;
+  overflow-x: hidden;
+}
+
+.topbar,
+.layout,
+.trend-panel {
+  border: 1px solid var(--line);
+  background: rgba(25, 28, 31, 0.94);
+  box-shadow: 0 18px 36px var(--shadow);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 22px;
+  border-radius: 14px 14px 8px 8px;
+}
+
+.eyebrow {
+  color: var(--cyan);
+  font: 700 11px "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 3px 0 0;
+  font: 700 26px "Bahnschrift SemiBold", "Segoe UI", sans-serif;
+}
+
+.actions,
+.period-tabs {
+  display: flex;
+  gap: 10px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 280px minmax(390px, 0.8fr) minmax(800px, 1.2fr);
+  min-height: 390px;
+  margin-top: 14px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.day-list,
+.conversation-panel {
+  background: rgba(17, 19, 21, 0.58);
+  min-width: 0;
+  padding: 14px;
+}
+
+.day-list {
+  border-right: 1px solid var(--line);
+}
+
+.conversation-panel {
+  border-left: 1px solid var(--line);
+}
+
+.receipt-panel,
+.trend-panel,
+.topbar {
+  min-width: 0;
+}
+
+.section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.section-title small,
+.muted,
+.muted-cell {
+  color: var(--muted);
+}
+
+.section-title small,
+.muted {
+  font: 12px "Segoe UI", system-ui, sans-serif;
+}
+
+.day-items {
+  margin-top: 14px;
+  display: grid;
+  gap: 7px;
+  max-height: 318px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 3px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(118, 217, 230, 0.45) rgba(11, 13, 15, 0.2);
+}
+
+.day-item {
+  display: grid;
+  grid-template-columns: 62px minmax(62px, 1fr) 68px;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  padding: 9px 6px;
+  text-align: left;
+}
+
+.day-item.active {
+  border-color: rgba(118, 217, 230, 0.65);
+  background: rgba(118, 217, 230, 0.08);
+}
+
+.mono,
+.day-date {
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.day-tokens {
+  color: var(--cyan);
+  font-weight: 700;
+  min-width: 0;
+  padding-right: 2px;
+  text-align: right;
+}
+
+.day-cost,
+.cost {
+  color: var(--amber);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  text-align: right;
+}
+
+.receipt-panel {
+  padding: 26px 30px;
+}
+
+.receipt-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+  border-bottom: 1px dashed rgba(236, 231, 221, 0.3);
+  padding-bottom: 22px;
+}
+
+.receipt-date {
+  font: 700 34px "Bahnschrift SemiBold", "Segoe UI", sans-serif;
+}
+
+.receipt-total {
+  text-align: right;
+}
+
+.receipt-total span,
+.receipt-total strong {
+  display: block;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.receipt-total span {
+  color: var(--cyan);
+  font-size: 28px;
+}
+
+.receipt-total strong {
+  color: var(--amber);
+  font-size: 26px;
+  margin-top: 6px;
+}
+
+.split-bar {
+  display: flex;
+  height: 14px;
+  margin: 24px 0 18px;
+  background: #0b0d0f;
+  border: 1px solid var(--line);
+}
+
+.split {
+  min-width: 2px;
+}
+
+.input { background: var(--cyan); }
+.cached { background: var(--violet); }
+.output { background: var(--amber); }
+.reasoning { background: var(--muted); }
+
+.category-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.category-row {
+  display: grid;
+  grid-template-columns: 88px 1fr 72px 92px;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(48, 54, 61, 0.72);
+}
+
+.category-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+}
+
+.mark {
+  width: 7px;
+  height: 28px;
+  display: inline-block;
+}
+
+.category-tokens,
+.category-percent,
+.category-cost {
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.category-percent,
+.category-cost {
+  text-align: right;
+}
+
+.category-percent {
+  color: var(--muted);
+}
+
+.category-cost {
+  color: var(--amber);
+  font-weight: 700;
+}
+
+.conversation-head,
+.conversation-row {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) 96px 120px 78px 78px 70px 54px;
+  gap: 10px;
+  align-items: center;
+}
+
+.conversation-head {
+  margin-top: 16px;
+  padding: 0 0 8px;
+  color: var(--muted);
+  font: 11px "Cascadia Mono", Consolas, monospace;
+  border-bottom: 1px solid var(--line);
+}
+
+.conversation-rows {
+  max-height: 314px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(118, 217, 230, 0.5) rgba(11, 13, 15, 0.28);
+}
+
+.conversation-rows::-webkit-scrollbar,
+.day-items::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+.conversation-rows::-webkit-scrollbar-track,
+.day-items::-webkit-scrollbar-track {
+  background: rgba(11, 13, 15, 0.28);
+}
+
+.conversation-rows::-webkit-scrollbar-thumb,
+.day-items::-webkit-scrollbar-thumb {
+  background: rgba(118, 217, 230, 0.5);
+  border-radius: 999px;
+}
+
+.conversation-row {
+  min-height: 36px;
+  border-bottom: 1px solid rgba(48, 54, 61, 0.6);
+  font-size: 12px;
+}
+
+.conversation-title,
+.clip {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.conversation-title {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.number {
+  color: var(--cyan);
+  text-align: right;
+}
+
+.conversation-empty {
+  padding: 26px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.trend-panel {
+  margin-top: 14px;
+  padding: 18px 22px 20px;
+  border-radius: 8px 8px 14px 14px;
+}
+
+.trend-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.section-title.compact {
+  display: block;
+}
+
+.period.active {
+  background: var(--cyan);
+  color: #0b0d0f;
+}
+
+.chart {
+  position: relative;
+  height: 210px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(118, 217, 230, 0.1);
+  background: rgba(11, 13, 15, 0.24);
+}
+
+.trend-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.chart-grid,
+.chart-baseline {
+  vector-effect: non-scaling-stroke;
+  shape-rendering: crispEdges;
+}
+
+.chart-grid {
+  stroke: rgba(142, 150, 158, 0.18);
+  stroke-width: 1;
+}
+
+.chart-baseline {
+  stroke: rgba(118, 217, 230, 0.32);
+  stroke-width: 1;
+}
+
+.chart-axis-label {
+  fill: var(--muted);
+  font: 10px "Cascadia Mono", Consolas, monospace;
+}
+
+.chart-area {
+  fill: url("#trend-area-fill");
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--cyan);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 5px rgba(118, 217, 230, 0.18));
+}
+
+.chart-guide {
+  stroke: rgba(118, 217, 230, 0.32);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  vector-effect: non-scaling-stroke;
+  opacity: 0;
+}
+
+.chart-guide.visible {
+  opacity: 1;
+}
+
+.chart-point {
+  fill: var(--panel);
+  stroke: var(--cyan);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  transition: r 120ms ease, fill 120ms ease;
+}
+
+.line-point:hover .chart-point,
+.line-point:focus .chart-point {
+  fill: var(--cyan);
+  r: 5;
+}
+
+.line-point.peak .chart-point {
+  fill: var(--coral);
+  stroke: #ffd0ca;
+}
+
+.chart-hit {
+  fill: transparent;
+  cursor: crosshair;
+  outline: none;
+}
+
+.chart-tooltip {
+  position: absolute;
+  z-index: 2;
+  min-width: 142px;
+  padding: 8px 10px;
+  border: 1px solid rgba(118, 217, 230, 0.3);
+  background: rgba(25, 28, 31, 0.97);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.32);
+  color: var(--text);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -100%);
+  transition: opacity 90ms ease;
+}
+
+.chart-tooltip.visible {
+  opacity: 1;
+}
+
+.chart-tooltip.below {
+  transform: translate(-50%, 0);
+}
+
+.chart-tooltip strong,
+.chart-tooltip span {
+  display: block;
+  white-space: nowrap;
+}
+
+.chart-tooltip strong {
+  margin-bottom: 3px;
+  font: 700 11px "Cascadia Mono", Consolas, monospace;
+}
+
+.chart-tooltip span {
+  color: var(--muted);
+  font: 11px "Cascadia Mono", Consolas, monospace;
+}
+
+.chart-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--muted);
+  font: 12px "Cascadia Mono", Consolas, monospace;
+}
+
+@media (max-height: 900px) {
+  body {
+    padding: 14px 0;
+  }
+
+  .topbar {
+    padding: 14px 20px;
+  }
+
+  .layout {
+    min-height: 350px;
+    margin-top: 10px;
+  }
+
+  .receipt-panel {
+    padding: 18px 30px;
+  }
+
+  .receipt-head {
+    padding-bottom: 14px;
+  }
+
+  .receipt-date {
+    font-size: 30px;
+  }
+
+  .receipt-total span {
+    font-size: 24px;
+  }
+
+  .receipt-total strong {
+    margin-top: 3px;
+    font-size: 22px;
+  }
+
+  .split-bar {
+    margin: 14px 0 10px;
+  }
+
+  .category-rows {
+    gap: 2px;
+  }
+
+  .category-row {
+    padding: 7px 0;
+  }
+
+  .day-items {
+    max-height: 278px;
+  }
+
+  .conversation-rows {
+    max-height: 274px;
+  }
+
+  .trend-panel {
+    margin-top: 10px;
+    padding: 14px 22px 16px;
+  }
+
+  .trend-head {
+    margin-bottom: 8px;
+  }
+
+  .chart {
+    height: 176px;
+  }
+}

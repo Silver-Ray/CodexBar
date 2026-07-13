@@ -1,0 +1,40 @@
+[project]
+name = "codexbar"
+version = "0.1.0"
+description = "CodexBar is a privacy-conscious Windows taskbar widget for Codex quota and local token usage."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "zhuxianghcl-ctrl" },
+]
+keywords = ["codex", "openai", "windows", "taskbar", "token-usage"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Desktop Environment",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "pywebview>=6.2.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/zhuxianghcl-ctrl/CodexBar"
+Repository = "https://github.com/zhuxianghcl-ctrl/CodexBar.git"
+Issues = "https://github.com/zhuxianghcl-ctrl/CodexBar/issues"
+Security = "https://github.com/zhuxianghcl-ctrl/CodexBar/security/policy"
+
+[dependency-groups]
+build = [
+    "pyinstaller==6.21.0",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'win32'"]

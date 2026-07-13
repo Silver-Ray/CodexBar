@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>CodexBar Token 用量</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <section id="loadingOverlay" class="loading-overlay visible" aria-live="polite">
+    <div class="loading-console">
+      <div class="loading-eyebrow">CodexBar scanner</div>
+      <h2>正在索引本机 token 账本</h2>
+      <div class="loading-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="1">
+        <div id="loadingProgressFill" class="loading-progress-fill"></div>
+      </div>
+      <div class="token-tape" aria-hidden="true"></div>
+      <div class="loading-readout">
+        <span id="loadingPercent">1%</span>
+        <strong id="loadingStage">连接本机 Codex 日志</strong>
+      </div>
+      <div id="loadingDetail" class="loading-detail">准备读取 SQLite 和 rollout</div>
+      <button id="loadingRetryButton" class="loading-retry" type="button">重试</button>
+    </div>
+  </section>
+
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">CodexBar local ledger</div>
+        <h1>Token 用量账本</h1>
+      </div>
+      <div class="actions">
+        <button id="todayButton" type="button">今天</button>
+        <button id="refreshButton" type="button">刷新</button>
+      </div>
+    </header>
+
+    <section class="layout">
+      <aside class="day-list">
+        <div class="section-title">
+          <span>最近日期</span>
+          <small>tokens / cost</small>
+        </div>
+        <div id="dayList" class="day-items"></div>
+      </aside>
+
+      <section class="receipt-panel">
+        <div class="receipt-head">
+          <div>
+            <div id="receiptDate" class="receipt-date">--</div>
+            <div id="receiptMeta" class="muted">事件 0 · 线程 0</div>
+          </div>
+          <div class="receipt-total">
+            <span id="totalTokens">--</span>
+            <strong id="totalCost">$--</strong>
+          </div>
+        </div>
+
+        <div id="splitBar" class="split-bar"></div>
+        <div id="categoryRows" class="category-rows"></div>
+      </section>
+
+      <aside class="conversation-panel">
+        <div class="section-title">
+          <span>对话排行</span>
+          <small id="conversationDate">--</small>
+        </div>
+        <div class="conversation-head">
+          <span>对话</span>
+          <span>模型</span>
+          <span>目录</span>
+          <span>tokens</span>
+          <span>花费</span>
+          <span>I/C/O</span>
+          <span>消息</span>
+        </div>
+        <div id="conversationRows" class="conversation-rows"></div>
+      </aside>
+    </section>
+
+    <section class="trend-panel">
+      <div class="trend-head">
+        <div>
+          <div class="section-title compact">趋势统计</div>
+          <div id="rangeMeta" class="muted">--</div>
+        </div>
+        <div class="period-tabs">
+          <button class="period active" data-period="week" type="button">每周</button>
+          <button class="period" data-period="month" type="button">每月</button>
+          <button class="period" data-period="year" type="button">每年</button>
+        </div>
+      </div>
+      <div id="chart" class="chart"></div>
+    </section>
+  </main>
+  <script src="dashboard.js"></script>
+</body>
+</html>
