@@ -37,9 +37,17 @@ CodexBar 是便携版应用，不需要安装 Python，也没有传统安装向�
 程序会出现在任务栏系统托盘区域左侧。请保留解压后的整个 `CodexBar` 文件夹，不要只把
 `CodexBar.exe` 单独拿出来，因为 HTML 页面和 Python 运行库也在这个文件夹中。
 
-当前公开版本尚未购买商业代码签名证书，Windows SmartScreen 可能显示“未知发布者”。确认文件
-来自本仓库 Releases 后，可以点击“更多信息”再选择“仍要运行”。SHA-256 校验是可选的高级
-安全步骤，放在后面的“安全说明”中，不影响普通用户直接使用。
+> [!NOTE]
+> **首次运行可能出现 Windows SmartScreen 提示。** CodexBar 当前尚未使用商业代码签名
+> 证书，因此 Windows 可能显示“发布者未知”“Windows 已保护你的电脑”或“目前无法访问
+> SmartScreen”。该提示本身不是 CodexBar 的启动错误，也不等同于 Windows 已判定程序含有
+> 病毒；它表示 Windows 无法验证 EXE 的发布者身份或查询应用信誉。
+>
+> 仅在确认 ZIP 下载自本仓库的 [GitHub Releases](https://github.com/zhuxianghcl-ctrl/CodexBar/releases)
+> 后继续运行：看到“Windows 已保护你的电脑”时选择“更多信息 → 仍要运行”；看到“目前无法
+> 访问 SmartScreen”时选择“运行”。不要运行来自第三方网盘、群聊或经过重新打包的版本。
+
+SHA-256 校验是可选的高级安全步骤，放在后面的“安全说明”中，不影响普通用户直接使用。
 
 ## 第一次使用
 

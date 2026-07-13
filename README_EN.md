@@ -29,9 +29,21 @@ CodexBar is a portable app. It does not require Python or a traditional installe
 3. Open the extracted `CodexBar` folder and run `CodexBar.exe`.
 
 Keep the complete folder together because the dashboard assets and Python runtime sit beside the
-EXE. Public builds are currently unsigned, so Windows SmartScreen may identify the publisher as
-unknown. Continue only when the archive came from this repository's Releases page. SHA-256
-verification is available later in this README as an optional advanced safety check.
+EXE.
+
+> [!NOTE]
+> **Windows SmartScreen may appear on first launch.** CodexBar does not currently use a commercial
+> code-signing certificate, so Windows may show "Unknown publisher", "Windows protected your PC",
+> or "SmartScreen can't be reached right now". This prompt is not a CodexBar startup error and does
+> not by itself mean Windows has identified malware; Windows cannot verify the EXE publisher or
+> retrieve its application reputation.
+>
+> Continue only when the ZIP came from this repository's
+> [GitHub Releases](https://github.com/zhuxianghcl-ctrl/CodexBar/releases). For "Windows protected
+> your PC", choose "More info" and then "Run anyway". If SmartScreen cannot be reached, choose
+> "Run". Do not run copies from third-party file hosts, chat attachments, or repackaged downloads.
+
+SHA-256 verification is available later in this README as an optional advanced safety check.
 
 On first use, an existing ChatGPT OAuth login is detected automatically. If the widget shows
 `AUTH`, run `codex login --device-auth`, finish the browser login, and click the widget to refresh.
