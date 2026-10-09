@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
@@ -16,7 +17,7 @@ import threading
 import time
 from typing import Callable, Literal, TypedDict
 
-from . import config
+from . import config, pricing
 
 
 class TokenUsageData(TypedDict):
@@ -108,30 +109,8 @@ LONG_CONTEXT_THRESHOLD = 272_000
 UsagePeriod = Literal["week", "month", "year"]
 ProgressCallback = Callable[[dict[str, object]], None]
 
-DEFAULT_MODEL_PRICES: dict[str, ModelPrice] = {
-    "gpt-5.6-sol": {"input": 5.00, "cached_input": 0.50, "output": 30.00},
-    "gpt-5.6-terra": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
-    "gpt-5.6-luna": {"input": 1.00, "cached_input": 0.10, "output": 6.00},
-    "gpt-5.5": {
-        "input": 5.00,
-        "cached_input": 0.50,
-        "output": 30.00,
-        "long_input": 10.00,
-        "long_cached_input": 1.00,
-        "long_output": 45.00,
-    },
-    "gpt-5.4": {
-        "input": 2.50,
-        "cached_input": 0.25,
-        "output": 15.00,
-        "long_input": 5.00,
-        "long_cached_input": 0.50,
-        "long_output": 22.50,
-    },
-    "gpt-5.4-mini": {"input": 0.75, "cached_input": 0.075, "output": 4.50},
-    "gpt-5.4-nano": {"input": 0.20, "cached_input": 0.02, "output": 1.25},
-    "gpt-5.3-codex": {"input": 1.75, "cached_input": 0.175, "output": 14.00},
-}
+DEFAULT_MODEL_PRICES: dict[str, ModelPrice] = pricing.load_bundled_prices()
+_PRICE_REVISION: tuple | None = None
 
 _CACHE: tuple[float, str, str, TokenUsageData] | None = None
 _RANGE_CACHE: tuple[float, str, str, str, UsageRangeData] | None = None
@@ -189,10 +168,15 @@ def format_cost_usd(cost_usd: float | None, partial: bool = False) -> str:
 
 
 def load_model_prices(path: str | None = None) -> dict[str, ModelPrice]:
-    """Load built-in model prices plus optional local overrides."""
+    """Load current official/cached prices, then apply user overrides."""
 
+    global _PRICE_REVISION
+    revision = pricing.cache_revision()
+    if revision != _PRICE_REVISION:
+        clear_usage_cache()
+        _PRICE_REVISION = revision
     prices: dict[str, ModelPrice] = {
-        model: ModelPrice(**values) for model, values in DEFAULT_MODEL_PRICES.items()
+        model: ModelPrice(**values) for model, values in pricing.load_official_prices().items()
     }
     prices.update(load_model_price_overrides(path=path))
     return prices
@@ -222,7 +206,7 @@ def normalize_model_price_overrides(overrides: dict) -> dict[str, ModelPrice]:
         clean: ModelPrice = {}
         for key in PRICE_KEYS:
             raw = value.get(key)
-            if isinstance(raw, (int, float)) and raw >= 0:
+            if type(raw) in (int, float) and math.isfinite(raw) and raw >= 0:
                 clean[key] = float(raw)
         if set(REQUIRED_PRICE_KEYS).issubset(clean):
             result[model] = clean
@@ -239,15 +223,17 @@ def parse_price_override_text(value: str) -> float | None:
         parsed = float(text)
     except ValueError as exc:
         raise ValueError("price must be a number") from exc
-    if parsed < 0:
+    if not math.isfinite(parsed) or parsed < 0:
         raise ValueError("price must be non-negative")
     return parsed
 
 
-def complete_price_override(model: str, values: dict[str, float]) -> ModelPrice:
+def complete_price_override(
+    model: str, values: dict[str, float], base_prices: dict | None = None,
+) -> ModelPrice:
     """Fill missing default-model prices or validate a custom model override."""
 
-    base = DEFAULT_MODEL_PRICES.get(model)
+    base = (pricing.load_official_prices() if base_prices is None else base_prices).get(model)
     if base:
         completed: ModelPrice = {}
         for key in PRICE_KEYS:
@@ -372,6 +358,7 @@ def collect_today_usage(
     target_day = today or dt.date.today()
     cache_key = (str(home), target_day.isoformat())
     global _CACHE
+    prices = load_model_prices()
     now = time.time()
     if use_cache and _CACHE:
         cached_at, cached_home, cached_day, cached_data = _CACHE
@@ -382,7 +369,6 @@ def collect_today_usage(
         ):
             return cached_data.copy()
 
-    prices = load_model_prices()
     result = _collect_today_usage_uncached(home, target_day, prices)
     if use_cache:
         _CACHE = (now, cache_key[0], cache_key[1], result.copy())
@@ -409,6 +395,7 @@ def collect_usage_range(
     target_day = anchor_date or dt.date.today()
     cache_key = (str(home), period, target_day.isoformat())
     global _RANGE_CACHE
+    prices = load_model_prices()
     now = time.time()
     if use_cache and _RANGE_CACHE:
         cached_at, cached_home, cached_period, cached_day, cached_data = _RANGE_CACHE
@@ -421,7 +408,6 @@ def collect_usage_range(
             return _copy_range_data(cached_data)
 
     start_date, end_date, buckets = _make_buckets(period, target_day)
-    prices = load_model_prices()
     result = _collect_usage_range_uncached(home, period, start_date, end_date, buckets, prices)
     if use_cache:
         _RANGE_CACHE = (now, cache_key[0], cache_key[1], cache_key[2], _copy_range_data(result))
@@ -447,6 +433,7 @@ def collect_usage_days(
     ]
     cache_key = (str(home), f"days:{day_count}", target_day.isoformat())
     global _RANGE_CACHE
+    prices = load_model_prices()
     now = time.time()
     if use_cache and _RANGE_CACHE:
         cached_at, cached_home, cached_period, cached_day, cached_data = _RANGE_CACHE
@@ -458,7 +445,6 @@ def collect_usage_days(
         ):
             return _copy_range_data(cached_data)
 
-    prices = load_model_prices()
     result = _collect_usage_range_uncached(home, "week", start_date, end_date, buckets, prices)
     result["period"] = f"days:{day_count}"
     if use_cache:

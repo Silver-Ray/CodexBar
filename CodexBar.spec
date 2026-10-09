@@ -43,6 +43,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    manifest=str(ROOT / "codexbar" / "app.manifest"),
     icon=str(ROOT / "codexbar" / "assets" / "codexbar.ico"),
     version=str(ROOT / "codexbar" / "version_info.txt"),
 )

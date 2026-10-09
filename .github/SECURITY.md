@@ -9,7 +9,7 @@ the `0.x` series, so internal interfaces and the undocumented quota endpoint may
 
 Please use GitHub's private vulnerability reporting form:
 
-<https://github.com/zhuxianghcl-ctrl/CodexBar/security/advisories/new>
+<https://github.com/Silver-Ray/CodexBar/security/advisories/new>
 
 Do not open a public Issue for a suspected credential leak, authentication bypass, unsafe
 WebView behavior, or release-pipeline compromise. Do not attach real access tokens, refresh

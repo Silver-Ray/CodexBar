@@ -8,6 +8,7 @@ runtime components intentionally distributed with CodexBar 0.1.0.
 | --- | ---: | --- |
 | CPython | 3.13 | Python Software Foundation License 2.0 |
 | Tcl/Tk | bundled with CPython | Tcl/Tk License |
+| comtypes | 1.4.17 | MIT |
 | pywebview | 6.2.1 | BSD-3-Clause |
 | Bottle | 0.13.4 | MIT |
 | proxy-tools | 0.1.0 | BSD-2-Clause |
@@ -27,6 +28,7 @@ directory; this notice does not replace those license texts.
 
 - CPython: <https://github.com/python/cpython/blob/main/LICENSE>
 - Tcl/Tk: <https://www.tcl-lang.org/software/tcltk/license.html>
+- comtypes: <https://github.com/enthought/comtypes/blob/main/LICENSE.txt>
 - pywebview: <https://github.com/r0x0r/pywebview/blob/master/LICENSE.md>
 - Bottle: <https://github.com/bottlepy/bottle/blob/master/LICENSE>
 - proxy-tools: <https://github.com/r0x0r/proxy_tools/blob/master/LICENSE>

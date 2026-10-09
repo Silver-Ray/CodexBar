@@ -24,12 +24,26 @@ and an API-equivalent cost estimate.
 CodexBar is a portable app. It does not require Python or a traditional installer:
 
 1. Download the latest `CodexBar-Windows-x64.zip` from
-   [GitHub Releases](https://github.com/zhuxianghcl-ctrl/CodexBar/releases).
+   [GitHub Releases](https://github.com/Silver-Ray/CodexBar/releases).
 2. Extract the complete ZIP.
 3. Open the extracted `CodexBar` folder and run `CodexBar.exe`.
 
 Keep the complete folder together because the dashboard assets and Python runtime sit beside the
 EXE.
+
+The widget uses a free taskbar slot, avoiding application buttons and widgets such as Traffic
+Monitor. When space is tight, it collapses to two rows showing only the 5h and weekly remaining
+quotas. Hover to see all details; move away to dismiss them. Full display returns when space
+becomes available. If even the compact view cannot fit or layout detection is unavailable,
+a CodexBar notification-area icon provides the same hover details, also for top or side taskbars.
+The bar is embedded in the taskbar and stays visible when Start, search, or clock menus open,
+without waiting to reappear after they close.
+Taskbar drawing uses a separate UI thread from settings and menus, so the taskbar host cannot
+block panel focus operations. Restoring the usage window uses an asynchronous request.
+
+Text and layout render at the display's native DPI, including 125%, 150%, and 200% scaling,
+instead of relying on Windows to enlarge a bitmap. The taskbar widget updates when the main
+display or its scale changes, preserving your saved width and font preferences.
 
 > [!NOTE]
 > **Windows SmartScreen may appear on first launch.** CodexBar does not currently use a commercial
@@ -39,15 +53,16 @@ EXE.
 > retrieve its application reputation.
 >
 > Continue only when the ZIP came from this repository's
-> [GitHub Releases](https://github.com/zhuxianghcl-ctrl/CodexBar/releases). For "Windows protected
+> [GitHub Releases](https://github.com/Silver-Ray/CodexBar/releases). For "Windows protected
 > your PC", choose "More info" and then "Run anyway". If SmartScreen cannot be reached, choose
 > "Run". Do not run copies from third-party file hosts, chat attachments, or repackaged downloads.
 
 SHA-256 verification is available later in this README as an optional advanced safety check.
 
 On first use, an existing ChatGPT OAuth login is detected automatically. If the widget shows
-`AUTH`, run `codex login --device-auth`, finish the browser login, and click the widget to refresh.
-Click refreshes, double-click opens Settings, and right-click opens the full menu.
+`AUTH`, run `codex login --device-auth`, finish the browser login, and choose Refresh from the
+right-click menu. Click opens Token Usage (or restores its existing window), double-click opens
+Settings, and right-click opens the full menu. The compact view and notification icon use the same actions.
 
 ## Run From Source (Developers)
 
@@ -100,9 +115,12 @@ is not covered by a public stability guarantee. OAuth refreshes use
 
 Cost figures use input, cached-input, and output token counts from local events. Reasoning tokens
 are displayed separately but are already part of output pricing and are not charged twice.
-Built-in prices are a release-time snapshot of the OpenAI Standard API prices. Check the
-[OpenAI model comparison page](https://developers.openai.com/api/docs/models/compare) and use
-the price editor when a model is unknown or its price changes. Estimates do not represent a
+Models and prices update automatically once a day from the public
+[OpenAI Standard API price table](https://developers.openai.com/api/docs/pricing), including
+long-context rates. Failed updates retain the last good cache and retry after an hour; a bundled
+snapshot supports first-run offline use. The dashboard shows the price date and offline status.
+The scrollable price editor includes newly published models, and manual overrides take priority.
+If no discounted cached-input rate is published, the normal input rate is used. Estimates do not represent a
 ChatGPT Plus, Pro, Team, or Enterprise bill.
 
 ## Local Data And Privacy
@@ -117,11 +135,13 @@ CodexBar writes only its own application data under `%LOCALAPPDATA%\CodexBar`:
 - `credentials.dat`: OAuth account cache encrypted with current-user Windows DPAPI.
 - `config.json`: widget and refresh settings.
 - `model_prices.json`: optional user price overrides.
+- `official_model_prices.json`: the latest public model/price cache.
 - `error.log` and `error.log.1`: size-limited, sanitized diagnostics.
 
 Conversation titles, rollouts, token reports, price overrides, and diagnostic logs are not sent
 by CodexBar. The quota request necessarily sends the selected OAuth credential and account ID to
 the OpenAI authentication or ChatGPT host. See [docs/PRIVACY.md](docs/PRIVACY.md) for the complete boundary.
+Pricing sync reads only the public official documentation and sends no OAuth credentials or local usage data.
 
 An attacker already running code as the same signed-in Windows user may be able to use DPAPI and
 read that user's files. DPAPI protects data at rest from other users; it does not protect a

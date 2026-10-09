@@ -32,6 +32,7 @@ OLDER_LEGACY_CFG_PATH = os.path.join(HOME, ".codex", ".quota_widget_cfg.json")
 VAULT_PATH = os.path.join(VAULT_DIR, "credentials.dat")
 LEGACY_VAULT_PATH = os.path.join(LEGACY_VAULT_DIR, "credentials.dat")
 MODEL_PRICES_PATH = os.path.join(VAULT_DIR, "model_prices.json")
+OFFICIAL_PRICES_PATH = os.path.join(VAULT_DIR, "official_model_prices.json")
 ERROR_LOG_PATH = os.path.join(VAULT_DIR, "error.log")
 ERROR_LOG_MAX_BYTES = 512 * 1024
 DIAGNOSTIC_EXPORT_MAX_BYTES = 1024 * 1024

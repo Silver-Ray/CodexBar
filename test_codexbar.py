@@ -24,9 +24,11 @@ from codexbar import (
     config,
     credentials,
     diagnostics,
+    dpi,
     quota_api,
     runtime,
     taskbar,
+    taskbar_accessibility,
     token_usage,
     ui,
     web_dashboard,
@@ -130,7 +132,7 @@ class OpenSourceReleaseContractTests(unittest.TestCase):
 
         with (root / "pyproject.toml").open("rb") as file:
             project = tomllib.load(file)["project"]
-        self.assertEqual(project["version"], "0.1.0")
+        self.assertRegex(project["version"], r"^\d+\.\d+\.\d+$")
         self.assertEqual(project["license"], "MIT")
         self.assertEqual(project["readme"], "README.md")
         self.assertIn("CodexBar", project["description"])
@@ -217,7 +219,12 @@ class ReleaseBuildContractTests(unittest.TestCase):
         version_path = root / "codexbar" / "version_info.txt"
         self.assertTrue(version_path.is_file())
         version_text = version_path.read_text(encoding="utf-8")
-        self.assertIn("filevers=(0, 1, 0, 0)", version_text)
+        from codexbar import __version__
+        version_tuple = tuple(map(int, __version__.split("."))) + (0,)
+        self.assertIn(f"filevers={version_tuple}", version_text)
+        self.assertIn(f"prodvers={version_tuple}", version_text)
+        self.assertIn(f"StringStruct('FileVersion', '{__version__}')", version_text)
+        self.assertIn(f"StringStruct('ProductVersion', '{__version__}')", version_text)
         self.assertIn("ProductName", version_text)
         self.assertIn("CodexBar", version_text)
         self.assertIn("LegalCopyright", version_text)
@@ -272,6 +279,65 @@ class ReleaseBuildContractTests(unittest.TestCase):
         self.assertIn("private-path", kinds)
         self.assertNotIn("sk-this-is-a-fake-but-secret-value", repr(findings))
 
+    def test_upstream_python_paths_require_identical_external_runtime_reference(self):
+        audit = self._load_release_audit()
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            release, runtime = base / "release", base / "python"
+            release.mkdir()
+            runtime.mkdir()
+            self._make_minimal_release(release)
+            internal = release / "_internal"
+            internal.mkdir()
+            content = b"MZ upstream C:\\Users\\UpstreamBuilder\\python\\source"
+            (runtime / "python313.dll").write_bytes(content)
+            (internal / "python313.dll").write_bytes(content)
+            self.assertEqual([f.kind for f in audit.audit_release(release)], ["private-path"])
+            self.assertEqual(audit.audit_release(release, runtime_root=runtime), [])
+            (internal / "python313.dll").write_bytes(content + b" altered")
+            self.assertEqual([f.kind for f in audit.audit_release(release, runtime_root=runtime)], ["private-path"])
+
+    def test_runtime_reference_does_not_exempt_text_or_nested_binaries(self):
+        audit = self._load_release_audit()
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            release, runtime = base / "release", base / "python"
+            release.mkdir()
+            (runtime / "DLLs").mkdir(parents=True)
+            self._make_minimal_release(release)
+            nested = release / "_internal" / "extra"
+            nested.mkdir(parents=True)
+            content = b"C:\\Users\\LocalUser\\private"
+            for relative in ("config.txt", "extra/python313.dll"):
+                target = release / "_internal" / relative
+                target.write_bytes(content)
+                (runtime / "DLLs" / target.name).write_bytes(content)
+            self.assertEqual(len(audit.audit_release(release, runtime_root=runtime)), 2)
+
+    def test_unchanged_runtime_binary_still_rejects_credentials(self):
+        audit = self._load_release_audit()
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            release, runtime = base / "release", base / "python"
+            release.mkdir()
+            (runtime / "DLLs").mkdir(parents=True)
+            self._make_minimal_release(release)
+            (release / "_internal").mkdir()
+            content = b"MZ C:\\Users\\Builder\\code sk-this-is-a-fake-but-secret-value"
+            (release / "_internal" / "_ssl.pyd").write_bytes(content)
+            (runtime / "DLLs" / "_ssl.pyd").write_bytes(content)
+            self.assertEqual([f.kind for f in audit.audit_release(release, runtime_root=runtime)], ["credential-pattern"])
+
+    def test_release_cannot_whitelist_itself_as_the_runtime(self):
+        audit = self._load_release_audit()
+        with tempfile.TemporaryDirectory() as temp:
+            release = Path(temp)
+            self._make_minimal_release(release)
+            internal = release / "_internal"
+            internal.mkdir()
+            (internal / "python313.dll").write_bytes(b"MZ C:\\Users\\LocalUser\\private")
+            self.assertEqual([f.kind for f in audit.audit_release(release, runtime_root=internal)], ["private-path"])
+
     def test_source_launcher_syncs_frozen_environment_before_python_check(self):
         root = Path(__file__).resolve().parent
         launcher = (root / "启动 CodexBar.bat").read_text(
@@ -325,6 +391,8 @@ class GitHubAutomationContractTests(unittest.TestCase):
         self.assertIn("runs-on: windows-latest", ci)
         self.assertIn("uv lock --check", ci)
         self.assertIn("python -m unittest", ci)
+        self.assertIn("python -m unittest discover -q", ci)
+        self.assertIn("upload-artifact@", ci)
         self.assertIn("python -m compileall", ci)
         self.assertIn("build_exe.ps1", ci)
 
@@ -332,6 +400,9 @@ class GitHubAutomationContractTests(unittest.TestCase):
         self.assertIn("contents: write", release)
         self.assertIn("GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}", release)
         self.assertIn("gh release create", release)
+        self.assertIn("python -m unittest discover -q", release)
+        self.assertIn("PSNativeCommandUseErrorActionPreference = $true", release)
+        self.assertIn("--repo $env:GITHUB_REPOSITORY", release)
         self.assertIn("CodexBar-Windows-x64.zip", release)
         self.assertIn("CodexBar-Windows-x64.zip.sha256", release)
 
@@ -466,6 +537,11 @@ class PublicDocumentationContractTests(unittest.TestCase):
 
 
 class DiagnosticsLoggingTests(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.object(ui.pricing, "refresh_prices", return_value={})
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.log_path = os.path.join(self.temp.name, "error.log")
@@ -1339,6 +1415,11 @@ class ResetFormattingTests(unittest.TestCase):
 
 
 class RefreshCoordinationTests(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.object(ui.pricing, "refresh_prices", return_value={})
+        patch.start()
+        self.addCleanup(patch.stop)
+
     @staticmethod
     def make_widget():
         widget = object.__new__(ui.QuotaWidget)
@@ -1435,6 +1516,11 @@ class RefreshCoordinationTests(unittest.TestCase):
 
 
 class ContextMenuStateTests(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.object(taskbar, "primary_scale", return_value=1.0)
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def test_scale_uses_configured_height_when_actual_taskbar_height_shrinks(self):
         widget = object.__new__(ui.QuotaWidget)
         widget.W = 300
@@ -1616,6 +1702,19 @@ class ContextMenuStateTests(unittest.TestCase):
             ui.QuotaWidget._position_at_taskbar(widget)
         position.assert_not_called()
 
+    def test_positioning_restores_configured_width_after_screen_limit(self):
+        widget = object.__new__(ui.QuotaWidget)
+        widget._context_menu_open = False
+        widget.root = mock.Mock()
+        widget.root.winfo_id.return_value = 1234
+        widget.settings = {"width": 600}
+        widget.W, widget.H, widget.desired_H = 300, 40, 40
+        widget._build_ui = mock.Mock()
+        with mock.patch.object(ui.taskbar, "position_taskbar_popup", return_value=(600, 40)) as position:
+            ui.QuotaWidget._position_at_taskbar(widget)
+        self.assertEqual(position.call_args.args[:3], (1234, 600, 40))
+        self.assertEqual(widget.W, 600)
+
     def test_close_context_menu_restores_positioning(self):
         widget = object.__new__(ui.QuotaWidget)
         widget._context_menu_open = True
@@ -1623,7 +1722,7 @@ class ContextMenuStateTests(unittest.TestCase):
         widget.W = 300
         widget.H = 40
         with mock.patch.object(
-            ui.taskbar, "position_taskbar_popup", return_value=None
+            ui.taskbar, "position_taskbar_popup", return_value=(300, 40)
         ) as position:
             ui.QuotaWidget._close_context_menu(widget)
             ui.QuotaWidget._position_at_taskbar(widget)
@@ -1656,6 +1755,19 @@ class TaskbarSelectionTests(unittest.TestCase):
         return value
 
     def setUp(self):
+        for target, name, value in (
+            (taskbar, "_work_area", (0, 0, 2560, 1392)),
+            (taskbar, "_native_obstacles", []),
+            (taskbar._USER32, "IsWindowVisible", True),
+            (taskbar._CONTROL_PROBE, "get", ((0, 1392, 600, 1440),)),
+            (taskbar, "_configure_taskbar_child", 400),
+        ):
+            patch = mock.patch.object(target, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        coordinate_patch = mock.patch.object(taskbar, "_client_coordinates", side_effect=lambda _, x, y: (x, y))
+        coordinate_patch.start()
+        self.addCleanup(coordinate_patch.stop)
         self.last_good_patch = mock.patch.object(taskbar, "_LAST_GOOD_TASKBAR", None)
         self.log_state_patch = mock.patch.object(taskbar, "_LAST_TASKBAR_LOG_STATE", None)
         self.log_event_patch = mock.patch.object(taskbar.diagnostics, "log_event")
@@ -1742,7 +1854,7 @@ class TaskbarSelectionTests(unittest.TestCase):
 
         self.assertIs(selected, cached)
 
-    def test_secondary_taskbar_without_tray_does_not_override_cached_primary(self):
+    def test_missing_primary_discards_cached_geometry(self):
         cached = taskbar.TaskbarInfo(
             hwnd=100,
             left=0,
@@ -1752,16 +1864,23 @@ class TaskbarSelectionTests(unittest.TestCase):
             tray_left=2052,
         )
         taskbar._LAST_GOOD_TASKBAR = cached
-        secondary_rect = self.rect(-2560, 1392, 0, 1440)
-
         with mock.patch.object(
             taskbar,
             "find_taskbars",
-            return_value=[(200, secondary_rect)],
+            return_value=[],
         ), mock.patch.object(taskbar, "_find_child_window", return_value=None):
             selected = taskbar.primary_taskbar()
 
-        self.assertIs(selected, cached)
+        self.assertIsNone(selected)
+        self.assertIsNone(taskbar._LAST_GOOD_TASKBAR)
+
+    def test_resized_taskbar_does_not_reuse_old_tray_coordinates(self):
+        taskbar._LAST_GOOD_TASKBAR = taskbar.TaskbarInfo(100, 0, 1392, 2560, 1440, 2052)
+        with mock.patch.object(
+            taskbar, "find_taskbars", return_value=[(100, self.rect(0, 720, 1280, 768))]
+        ), mock.patch.object(taskbar, "_find_child_window", return_value=None):
+            selected = taskbar.primary_taskbar()
+        self.assertEqual((selected.right, selected.tray_left), (1280, 1280))
 
     def test_primary_taskbar_falls_back_to_shell_tray_when_no_cache_exists(self):
         main_rect = self.rect(0, 1392, 2560, 1440)
@@ -1788,11 +1907,11 @@ class TaskbarSelectionTests(unittest.TestCase):
         )
 
         with mock.patch.object(taskbar, "primary_taskbar", return_value=info), mock.patch.object(
-            taskbar, "_configure_owned_popup", return_value=(400, False)
+            taskbar, "_configure_popup", return_value=(400, False)
         ), mock.patch.object(
             taskbar, "_is_above_in_z_order", return_value=True
         ), mock.patch.object(taskbar._USER32, "SetWindowPos") as set_window_pos:
-            taskbar.position_taskbar_popup(300, 300, 40)
+            taskbar._place_popup(300, info, (1748, 1396, 2048, 1436))
 
         flags = set_window_pos.call_args.args[-1]
         self.assertTrue(flags & 0x0004, "SWP_NOZORDER must be set")
@@ -1808,11 +1927,11 @@ class TaskbarSelectionTests(unittest.TestCase):
         )
 
         with mock.patch.object(taskbar, "primary_taskbar", return_value=info), mock.patch.object(
-            taskbar, "_configure_owned_popup", return_value=(400, True)
+            taskbar, "_configure_popup", return_value=(400, True)
         ), mock.patch.object(
             taskbar, "_is_above_in_z_order", return_value=None
         ), mock.patch.object(taskbar._USER32, "SetWindowPos") as set_window_pos:
-            taskbar.position_taskbar_popup(300, 300, 40)
+            taskbar._place_popup(300, info, (1748, 1396, 2048, 1436))
 
         flags = set_window_pos.call_args.args[-1]
         self.assertFalse(flags & 0x0004, "first binding must establish z-order")
@@ -1828,7 +1947,7 @@ class TaskbarSelectionTests(unittest.TestCase):
         )
 
         with mock.patch.object(taskbar, "primary_taskbar", return_value=info), mock.patch.object(
-            taskbar, "_configure_owned_popup", return_value=(400, False)
+            taskbar, "_configure_popup", return_value=(400, False)
         ), mock.patch.object(
             taskbar, "_is_above_in_z_order", return_value=False
         ), mock.patch.object(
@@ -1836,7 +1955,7 @@ class TaskbarSelectionTests(unittest.TestCase):
         ) as set_window_pos, mock.patch.object(
             taskbar.diagnostics, "log_event"
         ) as log_event:
-            taskbar.position_taskbar_popup(300, 300, 40)
+            taskbar._place_popup(300, info, (1748, 1396, 2048, 1436))
 
         self.assertEqual(
             set_window_pos.call_args.args[1].value,
@@ -1858,11 +1977,583 @@ class TaskbarSelectionTests(unittest.TestCase):
             self.assertTrue(taskbar._is_above_in_z_order(400, 100))
             self.assertFalse(taskbar._is_above_in_z_order(100, 400))
 
+    def test_search_and_clock_cannot_hide_widget_through_explorer_owner(self):
+        with mock.patch.object(taskbar, "_top_level_hwnd", return_value=400), mock.patch.object(
+            taskbar, "_GET_WINDOW_LONG_PTR", side_effect=[taskbar.WS_EX_TOPMOST, 100]
+        ), mock.patch.object(taskbar, "_SET_WINDOW_LONG_PTR") as set_style:
+            self.assertEqual(taskbar._configure_popup(300), (400, True))
+        self.assertIn(mock.call(400, taskbar.GWLP_HWNDPARENT, 0), set_style.call_args_list)
+        style = set_style.call_args_list[0].args[2]
+        self.assertTrue(style & taskbar.WS_EX_NOACTIVATE)
+        self.assertTrue(style & taskbar.WS_EX_TOOLWINDOW)
+
+    def test_hidden_window_is_shown_above_taskbar_again_without_activation(self):
+        info = taskbar.TaskbarInfo(100, 0, 1392, 2560, 1440, 2052)
+        with mock.patch.object(taskbar, "_configure_popup", return_value=(400, False)), mock.patch.object(
+            taskbar, "_is_above_in_z_order", return_value=True
+        ), mock.patch.object(taskbar._USER32, "IsWindowVisible", return_value=False), mock.patch.object(
+            taskbar._USER32, "SetWindowPos"
+        ) as place:
+            taskbar._place_popup(300, info, (900, 1396, 1044, 1436))
+        flags = place.call_args.args[-1]
+        self.assertTrue(flags & taskbar.SWP_SHOWWINDOW)
+        self.assertTrue(flags & taskbar.SWP_NOACTIVATE)
+        self.assertFalse(flags & taskbar.SWP_NOZORDER)
+
+    def test_crowded_taskbar_uses_compact_width_and_avoids_traffic_monitor(self):
+        info = taskbar.TaskbarInfo(100, 0, 1392, 2560, 1440, 2052)
+        with mock.patch.object(taskbar, "primary_taskbar", return_value=info), mock.patch.object(
+            taskbar._CONTROL_PROBE, "get", return_value=((0, 1392, 1620, 1440),)
+        ), mock.patch.object(taskbar, "_native_obstacles", return_value=[(1800, 1396, 2052, 1436)]), mock.patch.object(
+            taskbar, "_configure_popup", return_value=(400, False)
+        ), mock.patch.object(taskbar, "_is_above_in_z_order", return_value=True), mock.patch.object(
+            taskbar._USER32, "SetWindowPos"
+        ) as place:
+            self.assertEqual(taskbar.position_taskbar_popup(300, 300, 40, compact_width=96), (96, 40))
+        self.assertEqual(place.call_args.args[2:6], (1700, 1396, 96, 40))
+
+    def test_popup_avoids_native_traffic_monitor(self):
+        info = taskbar.TaskbarInfo(100, 0, 1392, 2560, 1440, 2052)
+        with mock.patch.object(taskbar, "primary_taskbar", return_value=info), mock.patch.object(
+            taskbar, "_native_obstacles", return_value=[(1800, 1396, 2052, 1436)]
+        ), mock.patch.object(taskbar, "_configure_popup", return_value=(400, False)), mock.patch.object(
+            taskbar, "_is_above_in_z_order", return_value=True
+        ), mock.patch.object(taskbar._USER32, "SetWindowPos") as position:
+            self.assertEqual(taskbar.position_taskbar_popup(300, 300, 40), (300, 40))
+        self.assertEqual(position.call_args.args[2:6], (1496, 1396, 300, 40))
+
+    def test_incomplete_accessibility_tree_does_not_cover_unknown_controls(self):
+        info = taskbar.TaskbarInfo(100, 0, 1392, 2560, 1440, 2052)
+        for controls in (None, (), ((2052, 1392, 2560, 1440),), ((500, 100, 800, 200),)):
+            with self.subTest(controls=controls), mock.patch.object(
+                taskbar, "primary_taskbar", return_value=info
+            ), mock.patch.object(taskbar._CONTROL_PROBE, "get", return_value=controls), mock.patch.object(
+                taskbar, "_configure_popup", return_value=(400, False)
+            ), mock.patch.object(taskbar, "_is_above_in_z_order", return_value=True), mock.patch.object(
+                taskbar._USER32, "SetWindowPos"
+            ) as position:
+                taskbar.position_taskbar_popup(300, 300, 40)
+            position.assert_not_called()
+
+
+@unittest.skipUnless(taskbar._IS_WINDOWS, "Win32 obstacle enumeration only")
+class TaskbarNativeObstacleTests(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.object(taskbar, "_NATIVE_OBSTACLE_WINDOWS", {})
+        patch.start()
+        self.addCleanup(patch.stop)
+        patch = mock.patch.object(taskbar, "_NATIVE_OBSTACLE_KEY", None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_shell_promotion_does_not_turn_a_live_monitor_into_free_space(self):
+        info = taskbar.TaskbarInfo(100, 0, 720, 1280, 768, 1000)
+        rect = TaskbarSelectionTests.rect(800, 724, 1000, 764)
+        pid = 123
+        def process_id(hwnd, target):
+            target._obj.value = pid
+        with mock.patch.object(taskbar, "_child_windows", return_value=[]), mock.patch.object(
+            taskbar._USER32, "EnumWindows", side_effect=lambda cb, lp: cb(200, lp)
+        ) as enumerate_windows, mock.patch.object(taskbar._USER32, "IsWindowVisible", return_value=True) as visible, mock.patch.object(
+            taskbar._USER32, "GetWindowThreadProcessId", side_effect=process_id
+        ), mock.patch.object(taskbar, "_window_class", return_value="TrafficMonitorWindow"), mock.patch.object(
+            taskbar, "_window_rect", return_value=rect
+        ):
+            self.assertEqual(taskbar._native_obstacles(info), [(800, 724, 1000, 764)])
+            enumerate_windows.side_effect = None  # Start/Search now omit the window.
+            rect.left = 750
+            self.assertEqual(taskbar._native_obstacles(info), [(750, 724, 1000, 764)])
+            pid = 456  # HWND was reused; old identity must not remain an obstacle.
+            self.assertEqual(taskbar._native_obstacles(info), [])
+            pid = 123
+            enumerate_windows.side_effect = lambda cb, lp: cb(200, lp)
+            self.assertTrue(taskbar._native_obstacles(info))
+            enumerate_windows.side_effect = None
+            visible.return_value = False
+            self.assertTrue(taskbar._native_obstacles(info))  # Shell temporarily hides owned popups.
+            enumerate_windows.side_effect = lambda cb, lp: cb(100, lp)
+            self.assertEqual(taskbar._native_obstacles(info), [])
+
+    def test_explorer_replacement_invalidates_known_monitor_handles(self):
+        taskbar._NATIVE_OBSTACLE_KEY = (100, (0, 720, 1280, 768))
+        taskbar._NATIVE_OBSTACLE_WINDOWS[200] = (123, "TrafficMonitorWindow")
+        info = taskbar.TaskbarInfo(300, 0, 720, 1280, 768, 1000)
+        with mock.patch.object(taskbar._USER32, "EnumWindows"), mock.patch.object(
+            taskbar, "_child_windows", return_value=[]
+        ), mock.patch.object(taskbar, "_window_rect") as rectangle:
+            self.assertEqual(taskbar._native_obstacles(info), [])
+            rectangle.assert_not_called()
+
+    def test_custom_children_and_floating_monitors_count_but_own_window_does_not(self):
+        info = taskbar.TaskbarInfo(100, 0, 720, 1280, 768, 1000)
+        rects = {
+            1: (100, 720, 1000, 768),  # empty task-list container
+            2: (800, 724, 1000, 764),  # Traffic Monitor custom-drawn child
+            3: (400, 724, 700, 764),   # our owned popup
+            4: (600, 724, 790, 764),   # other top-level taskbar monitor
+            5: (0, 0, 1280, 768),     # maximized application
+            6: (710, 724, 790, 764),   # hidden monitor
+        }
+        def process_id(hwnd, target):
+            target._obj.value = os.getpid() if hwnd == 3 else 123
+        with mock.patch.object(taskbar, "_child_windows", return_value=[1, 2, 6]), mock.patch.object(
+            taskbar._USER32, "EnumWindows", side_effect=lambda cb, lp: [cb(h, lp) for h in (100, 3, 4, 5)]
+        ), mock.patch.object(taskbar._USER32, "IsWindowVisible", side_effect=lambda h: h != 6), mock.patch.object(
+            taskbar._USER32, "GetWindowThreadProcessId", side_effect=process_id
+        ), mock.patch.object(taskbar, "_window_class", side_effect=lambda h: "MSTaskListWClass" if h == 1 else "#32770"), mock.patch.object(
+            taskbar, "_window_rect", side_effect=lambda h: TaskbarSelectionTests.rect(*rects[h])
+        ):
+            self.assertEqual(taskbar._native_obstacles(info), [rects[2], rects[4]])
+
+
+class ShellIntegrationTests(unittest.TestCase):
+    def test_taskbar_children_remain_discoverable_when_enumeration_omits_them(self):
+        children = {100: [200, 300], 200: [400], 300: [], 400: []}
+        def find(parent, previous, *_):
+            siblings = children[parent]
+            index = siblings.index(previous) + 1 if previous else 0
+            return siblings[index] if index < len(siblings) else 0
+        with mock.patch.object(taskbar._USER32, "FindWindowExW", side_effect=find), mock.patch.object(
+            taskbar._USER32, "EnumChildWindows"
+        ) as enumerate_children:
+            self.assertEqual(taskbar._child_windows(100), [200, 300, 400])
+            enumerate_children.assert_not_called()
+
+    def test_primary_taskbar_lookup_survives_empty_desktop_window_enumeration(self):
+        rect = TaskbarSelectionTests.rect(0, 720, 1280, 768)
+        with mock.patch.object(taskbar._USER32, "FindWindowW", return_value=100) as find, mock.patch.object(
+            taskbar._USER32, "EnumWindows"
+        ) as enumerate_windows, mock.patch.object(taskbar, "_window_rect", return_value=rect):
+            self.assertEqual(taskbar.find_taskbars(), [(100, rect)])
+            find.assert_called_once_with("Shell_TrayWnd", None)
+            enumerate_windows.assert_not_called()
+
+    def test_missing_shell_does_not_reuse_destroyed_window(self):
+        with mock.patch.object(taskbar._USER32, "FindWindowW", return_value=0):
+            self.assertEqual(taskbar.find_taskbars(), [])
+
+    def test_embedded_bar_uses_taskbar_client_coordinates_without_activation(self):
+        info = taskbar.TaskbarInfo(100, -1920, 1040, 0, 1080, -400)
+        def convert(_parent, point):
+            point._obj.x += 1920
+            point._obj.y -= 1040
+            return True
+        with mock.patch.object(taskbar, "_configure_taskbar_child", return_value=400), mock.patch.object(
+            taskbar._USER32, "ScreenToClient", side_effect=convert
+        ), mock.patch.object(taskbar._USER32, "SetWindowPos", return_value=True) as place:
+            self.assertEqual(taskbar._place_taskbar_child(300, info, (-704, 1044, -404, 1076)), (300, 32))
+            self.assertEqual(place.call_args.args[2:6], (1216, 4, 300, 32))
+            self.assertEqual(place.call_args.args[1].value, None)  # HWND_TOP among siblings
+            self.assertTrue(place.call_args.args[-1] & taskbar.SWP_NOACTIVATE)
+            self.assertTrue(place.call_args.args[-1] & taskbar.SWP_SHOWWINDOW)
+
+    def test_embedding_uses_child_parent_not_explorer_popup_owner(self):
+        with mock.patch.object(taskbar, "_top_level_hwnd", return_value=400), mock.patch.object(
+            taskbar, "_GET_WINDOW_LONG_PTR", side_effect=[taskbar.WS_POPUP, taskbar.WS_EX_TOOLWINDOW]
+        ), mock.patch.object(taskbar, "_SET_WINDOW_LONG_PTR") as style, mock.patch.object(
+            taskbar._USER32, "GetParent", side_effect=[0, 100]
+        ), mock.patch.object(taskbar._USER32, "SetParent") as parent:
+            self.assertEqual(taskbar._configure_taskbar_child(300, 100), 400)
+            parent.assert_called_once_with(400, 100)
+            self.assertIn(mock.call(400, taskbar.GWLP_HWNDPARENT, 0), style.call_args_list)
+            self.assertIn(mock.call(400, taskbar.GWL_STYLE, taskbar.WS_CHILD), style.call_args_list)
+
+    def test_failed_embedding_never_places_bar_over_desktop_windows(self):
+        info = taskbar.TaskbarInfo(100, 0, 720, 1280, 768, 1000)
+        with mock.patch.object(taskbar, "_configure_taskbar_child", return_value=None), mock.patch.object(
+            taskbar, "_client_coordinates", return_value=(0, 4)
+        ), mock.patch.object(taskbar._USER32, "SetWindowPos") as place:
+            self.assertIsNone(taskbar._place_taskbar_child(300, info, (0, 724, 300, 764)))
+            place.assert_not_called()
+
+    def test_withdrawn_widget_establishes_topmost_band_before_shell_attachment(self):
+        operations = []
+        with mock.patch.object(taskbar, "_top_level_hwnd", return_value=400), mock.patch.object(
+            taskbar, "_GET_WINDOW_LONG_PTR", side_effect=[taskbar.WS_POPUP, 0]
+        ), mock.patch.object(taskbar, "_SET_WINDOW_LONG_PTR"), mock.patch.object(
+            taskbar._USER32, "GetParent", side_effect=[0, 100]
+        ), mock.patch.object(taskbar._USER32, "SetWindowPos", side_effect=lambda *args: operations.append(("band", args)) or True), mock.patch.object(
+            taskbar._USER32, "SetParent", side_effect=lambda *args: operations.append(("parent", args))
+        ):
+            self.assertEqual(taskbar._configure_taskbar_child(300, 100), 400)
+        self.assertEqual([item[0] for item in operations], ["band", "parent"])
+        self.assertEqual(operations[0][1][1].value, taskbar.wintypes.HWND(taskbar.HWND_TOPMOST).value)
+        self.assertTrue(operations[0][1][-1] & taskbar.SWP_NOACTIVATE)
+
+    def test_repositioning_existing_child_does_not_clear_its_shell_parent(self):
+        with mock.patch.object(taskbar, "_top_level_hwnd", return_value=400), mock.patch.object(
+            taskbar, "_GET_WINDOW_LONG_PTR", side_effect=[taskbar.WS_CHILD, taskbar.WS_EX_NOACTIVATE]
+        ), mock.patch.object(taskbar, "_SET_WINDOW_LONG_PTR") as style, mock.patch.object(
+            taskbar._USER32, "GetParent", return_value=100
+        ), mock.patch.object(taskbar._USER32, "SetParent") as parent, mock.patch.object(
+            taskbar._USER32, "SetWindowPos"
+        ) as position:
+            self.assertEqual(taskbar._configure_taskbar_child(300, 100), 400)
+            parent.assert_not_called()
+            position.assert_not_called()
+            self.assertNotIn(mock.call(400, taskbar.GWLP_HWNDPARENT, 0), style.call_args_list)
+
+    def test_destroyed_native_widget_requests_rebuild_without_reusing_tk_path(self):
+        widget = object.__new__(ui.QuotaWidget)
+        widget.root = mock.Mock()
+        widget.root.winfo_id.return_value = 300
+        widget._closed = False
+        widget._position_at_taskbar = mock.Mock()
+        with mock.patch.object(taskbar, "window_exists", return_value=False):
+            widget._tick()
+        self.assertTrue(widget._restart_requested)
+        widget.root.quit.assert_called_once()
+        widget._position_at_taskbar.assert_not_called()
+        widget.root.after.assert_not_called()
+
+    def test_explorer_recovery_keeps_single_instance_mutex_until_final_exit(self):
+        first, second = mock.Mock(), mock.Mock()
+        first._restart_requested = True
+        second._restart_requested = False
+        with mock.patch.object(app, "acquire_single_instance", return_value=123) as acquire, mock.patch.object(
+            app, "release_single_instance"
+        ) as release, mock.patch.object(app.dpi, "enable_high_dpi"), mock.patch.object(
+            app.tk, "Tk", side_effect=[first_root := mock.Mock(), second_root := mock.Mock()]
+        ), mock.patch.object(app, "QuotaWidget", side_effect=[first, second]):
+            app.main([])
+            acquire.assert_called_once()
+            release.assert_called_once_with(123)
+        first.close.assert_called_once()
+        second.close.assert_not_called()
+        first_root.mainloop.assert_called_once()
+        second_root.mainloop.assert_called_once()
+
+    def test_recovery_cancels_periodic_and_menu_callbacks_before_destroying_tk(self):
+        widget = object.__new__(ui.QuotaWidget)
+        widget.root = mock.Mock()
+        widget.root.tk.splitlist.return_value = ("poll-tray", "tick", "menu-fallback")
+        widget._closed = False
+        widget._refresh_generation = 0
+        widget._refresh_after_id = None
+        widget._cancel_hover_timer = mock.Mock()
+        widget._hide_hover = mock.Mock()
+        widget.close()
+        self.assertEqual(widget.root.after_cancel.call_args_list, [mock.call("poll-tray"), mock.call("tick"), mock.call("menu-fallback")])
+        widget.root.destroy.assert_called_once()
+
+
+class TaskbarLayoutTests(unittest.TestCase):
+    def setUp(self):
+        self.info = taskbar.TaskbarInfo(100, 0, 720, 1280, 768, 1000)
+        self.work = (0, 0, 1280, 720)
+
+    def place(self, occupied, width=300):
+        return taskbar.taskbar_bounds(self.info, width, 40, occupied)
+
+    def test_full_widget_fits_to_right_of_applications(self):
+        self.assertEqual(self.place([(0, 720, 600, 768)]), (696, 724, 996, 764))
+
+    def test_small_screen_collapses_and_restores_full_width_when_space_recovers(self):
+        crowded = self.place([(0, 720, 800, 768)])
+        self.assertIsNone(crowded)
+        self.assertEqual(self.place([(0, 720, 800, 768)], width=96), (900, 724, 996, 764))
+        self.assertEqual(self.place([(0, 720, 600, 768)])[1], 724)
+
+    def test_traffic_monitor_near_tray_is_avoided(self):
+        self.assertEqual(
+            self.place([(0, 720, 300, 768), (800, 724, 1000, 764)]),
+            (496, 724, 796, 764),
+        )
+
+    def test_centered_apps_can_use_gap_on_left(self):
+        self.assertEqual(
+            self.place([(0, 720, 100, 768), (450, 720, 1000, 768)]),
+            (146, 724, 446, 764),
+        )
+
+    def test_fragmented_space_is_not_added_together(self):
+        self.assertIsNone(self.place([(250, 720, 350, 768), (600, 720, 700, 768)]))
+
+    def test_overlapping_obstacles_cannot_create_false_gap(self):
+        self.assertIsNone(self.place([(0, 720, 850, 768), (200, 720, 500, 768)]))
+
+    def test_unknown_layout_is_not_treated_as_empty(self):
+        self.assertIsNone(self.place(None))
+
+    def test_popup_above_taskbar_does_not_count_as_taskbar_obstacle(self):
+        self.assertEqual(self.place([(0, 0, 1280, 720)])[1], 724)
+
+    def test_high_width_setting_is_clamped_to_screen_in_floating_mode(self):
+        self.assertEqual(taskbar.popup_bounds(self.info, 1500, 40, None, self.work), (4, 676, 1276, 716))
+
+    def test_negative_monitor_coordinates_stay_on_same_monitor(self):
+        info = taskbar.TaskbarInfo(100, -1280, 720, 0, 768, -200)
+        result = taskbar.popup_bounds(info, 300, 40, None, (-1280, 0, 0, 720))
+        self.assertEqual(result, (-504, 676, -204, 716))
+
+    def test_top_taskbar_floats_below(self):
+        info = taskbar.TaskbarInfo(100, 0, 0, 1280, 48, 1000)
+        self.assertEqual(taskbar.popup_bounds(info, 300, 40, None, (0, 48, 1280, 768)), (696, 52, 996, 92))
+
+    def test_vertical_taskbar_floats_on_desktop_side(self):
+        info = taskbar.TaskbarInfo(100, 0, 0, 48, 768, 0)
+        self.assertEqual(taskbar.popup_bounds(info, 300, 40, [], (48, 0, 1280, 768)), (52, 724, 352, 764))
+
+    def test_dpi_mapping_rounds_outwards_with_negative_origin(self):
+        self.assertEqual(taskbar_accessibility.map_bounds(
+            (-1601, 1086, -1200, 1140), (-1920, 1080, 0, 1152), (-1280, 720, 0, 768)
+        ), (-1068, 724, -800, 760))
+
+
+class CompactWidgetTests(unittest.TestCase):
+    def widget(self):
+        widget = object.__new__(ui.QuotaWidget)
+        widget.settings = dict(config.DEFAULTS)
+        widget._dpi_scale = 1.5
+        widget.W, widget.H, widget.desired_H = 144, 60, 60
+        widget._collapsed = True
+        widget._closed = False
+        widget._context_menu_open = False
+        widget._status_code = None
+        widget._hover_window = None
+        widget._hover_visible = False
+        widget._hover_show_id = widget._hover_hide_id = None
+        widget._tray_entry = None
+        widget._tray_mode = False
+        widget.root = mock.Mock()
+        widget.root.winfo_id.return_value = 123
+        widget.root.state.return_value = "normal"
+        widget.canvas = mock.Mock()
+        widget.f_row_label = widget.f_row_pct = widget.f_row_reset = widget.f_row_stat = None
+        widget.data = {"rows": {"h": {"remain": 100}, "w": {"remain": 76}},
+                       "usage": {"tokens": "6.8M", "cost": "$1.23"}}
+        return widget
+
+    def test_compact_draws_only_two_labels_and_quota_percentages_at_full_font_size(self):
+        widget = self.widget()
+        widget._redraw()
+        calls = widget.canvas.create_text.call_args_list
+        self.assertEqual([call.kwargs["text"] for call in calls], ["5h", "100%", "每周", "76%"])
+        self.assertEqual(calls[1].kwargs["anchor"], "e")
+        self.assertEqual(widget._scale(), 1.0)
+
+    def test_compact_and_full_views_follow_available_width_without_changing_preferences(self):
+        widget = self.widget()
+        widget._build_ui = mock.Mock()
+        with mock.patch.object(taskbar, "primary_scale", return_value=1.5), mock.patch.object(
+            taskbar, "position_taskbar_popup", side_effect=[(144, 60), (450, 60)]
+        ) as place:
+            widget._position_at_taskbar()
+            self.assertTrue(widget._collapsed)
+            widget._position_at_taskbar()
+        self.assertFalse(widget._collapsed)
+        self.assertEqual(widget.W, 450)
+        self.assertEqual([call.kwargs["compact_width"] for call in place.call_args_list], [144, 144])
+        self.assertEqual(widget.settings, config.DEFAULTS)
+
+    def test_no_safe_gap_uses_tray_and_restores_bar_when_space_returns(self):
+        widget = self.widget()
+        widget._build_ui = mock.Mock()
+        with mock.patch.object(taskbar, "primary_scale", return_value=1.5), mock.patch.object(
+            taskbar, "position_taskbar_popup", side_effect=[None, (144, 60)]
+        ), mock.patch.object(ui.tray, "TrayEntry") as entry:
+            widget._position_at_taskbar()
+            self.assertTrue(widget._tray_mode)
+            widget.root.withdraw.assert_called_once()
+            entry.return_value.show.assert_called_once_with("CodexBar 5h 100% / 每周 76%")
+            widget._position_at_taskbar()
+        self.assertFalse(widget._tray_mode)
+        entry.return_value.hide.assert_called_once()
+
+    def test_hover_waits_then_opens_and_leaving_cancels_pending_open(self):
+        widget = self.widget()
+        widget.root.after.return_value = "timer"
+        widget._enter_bar()
+        widget.root.after.assert_called_once_with(150, widget._show_hover)
+        widget._leave_bar()
+        widget.root.after_cancel.assert_called_with("timer")
+        self.assertEqual(widget.root.after.call_args.args[0], 250)
+
+    def test_moving_into_details_keeps_popup_and_leaving_both_hides_it(self):
+        widget = self.widget()
+        widget._hover_visible = True
+        widget._hover_window = mock.Mock()
+        widget._hover_window.winfo_id.return_value = 456
+        widget.root.winfo_pointerxy.return_value = (900, 680)
+        with mock.patch.object(taskbar, "window_bounds", side_effect=[
+            (900, 724, 996, 764), (696, 676, 996, 716),
+            (900, 724, 996, 764), (696, 676, 996, 716),
+        ]):
+            widget._check_hover_leave()
+            self.assertTrue(widget._hover_visible)
+            widget.root.winfo_pointerxy.return_value = (300, 300)
+            widget._check_hover_leave()
+        self.assertFalse(widget._hover_visible)
+        widget._hover_window.withdraw.assert_called_once()
+
+    def test_detail_window_uses_full_configured_width_without_resizing_compact_bar(self):
+        widget = self.widget()
+        widget._hover_window = mock.Mock()
+        widget._hover_window.winfo_id.return_value = 456
+        widget._hover_canvas = mock.Mock()
+        with mock.patch.object(taskbar, "window_bounds", return_value=(900, 724, 1044, 784)), mock.patch.object(
+            taskbar, "position_hover_popup", return_value=(450, 60)
+        ) as place:
+            self.assertTrue(widget._position_hover())
+        self.assertEqual(place.call_args.args, (456, (900, 724, 1044, 784), 450, 60))
+        self.assertEqual((widget.W, widget.H), (144, 60))
+
+    def test_native_tray_notifications_are_queued_for_the_tk_thread(self):
+        if not taskbar._IS_WINDOWS:
+            self.skipTest("Win32 tray messages only")
+        entry = object.__new__(ui.tray.TrayEntry)
+        entry.events, entry.active, entry._restart = [], True, 0xCAFE
+        for code in (0x406, 0x407, 0x400, 0x7B, 0x203):
+            entry._message(123, 0x8001, 0, (1 << 16) | code)
+        self.assertEqual(entry.events, ["hover", "leave", "click", "menu", "settings"])
+
+
+class TaskbarProbeTests(unittest.TestCase):
+    def test_clock_menu_tree_keeps_known_slots_until_real_controls_return(self):
+        probe = taskbar_accessibility.TaskbarProbe()
+        key = (100, (0, 720, 1280, 768))
+        controls = ((0, 720, 600, 768),)
+        with mock.patch.object(taskbar_accessibility, "read_controls", return_value=controls):
+            probe._update(key, 10)
+        with mock.patch.object(taskbar_accessibility, "read_controls", side_effect=taskbar_accessibility.TaskbarMenuOpen):
+            probe._update(key, 15)
+        with mock.patch.object(taskbar_accessibility.time, "monotonic", return_value=15.5):
+            self.assertEqual(probe.get(*key), controls)
+        updated = ((0, 720, 700, 768),)
+        with mock.patch.object(taskbar_accessibility, "read_controls", return_value=updated):
+            probe._update(key, 16)
+        self.assertEqual(probe._result, updated)
+
+    def test_menu_does_not_create_a_slot_without_known_matching_taskbar_geometry(self):
+        probe = taskbar_accessibility.TaskbarProbe()
+        key = (100, (0, 720, 1280, 768))
+        with mock.patch.object(taskbar_accessibility, "read_controls", side_effect=taskbar_accessibility.TaskbarMenuOpen):
+            probe._update(key, 10)
+            self.assertIsNone(probe._result)
+            probe._result = ((0, 720, 600, 768),)
+            probe._update((200, key[1]), 11)
+            self.assertIsNone(probe._result)
+
+    def test_only_off_taskbar_menu_items_are_classified_as_a_menu_tree(self):
+        bounds = (0, 720, 1280, 768)
+        menu = [(1000, 600, 1250, 710)]
+        self.assertTrue(taskbar_accessibility._menu_only_snapshot(menu, bounds, True))
+        self.assertFalse(taskbar_accessibility._menu_only_snapshot(menu, bounds, False))
+        self.assertFalse(taskbar_accessibility._menu_only_snapshot([*menu, (0, 720, 600, 768)], bounds, True))
+
+    def test_first_read_does_not_block_and_busy_probe_does_not_spawn_more_threads(self):
+        probe = taskbar_accessibility.TaskbarProbe()
+        with mock.patch.object(taskbar_accessibility.threading, "Thread") as thread:
+            self.assertIsNone(probe.get(100, (0, 720, 1280, 768)))
+            self.assertIsNone(probe.get(100, (0, 720, 1280, 768)))
+            thread.assert_called_once()
+
+    def test_stale_or_different_taskbar_snapshot_is_never_used(self):
+        probe = taskbar_accessibility.TaskbarProbe()
+        bounds = (0, 720, 1280, 768)
+        with mock.patch.object(taskbar_accessibility, "read_controls", return_value=((0, 720, 600, 768),)):
+            probe._update((100, bounds), 10)
+        with mock.patch.object(taskbar_accessibility.time, "monotonic", return_value=10.5), mock.patch.object(
+            taskbar_accessibility.threading, "Thread"
+        ):
+            self.assertIsNotNone(probe.get(100, bounds))
+            self.assertIsNone(probe.get(200, bounds))
+            self.assertIsNone(probe.get(100, (0, 720, 1400, 768)))
+        with mock.patch.object(taskbar_accessibility.time, "monotonic", return_value=13):
+            self.assertIsNone(probe.get(100, bounds))
+
+    def test_failed_probe_discards_previous_result_and_can_retry(self):
+        probe = taskbar_accessibility.TaskbarProbe()
+        probe._result = ((0, 720, 600, 768),)
+        with mock.patch.object(taskbar_accessibility, "read_controls", side_effect=OSError("Explorer restarting")), mock.patch.object(
+            taskbar_accessibility.diagnostics, "log_exception"
+        ):
+            probe._update((100, (0, 720, 1280, 768)), 10)
+        self.assertIsNone(probe._result)
+        self.assertFalse(probe._busy)
+
+
+class DpiRenderingTests(unittest.TestCase):
+    def test_native_dpi_is_enabled_before_creating_tk(self):
+        calls = []
+        with mock.patch.object(app, "acquire_single_instance", return_value=123), mock.patch.object(
+            app, "release_single_instance"
+        ), mock.patch.object(app.dpi, "enable_high_dpi", side_effect=lambda: calls.append("dpi")), mock.patch.object(
+            app.tk, "Tk", side_effect=lambda: calls.append("tk") or mock.Mock()
+        ), mock.patch.object(app, "QuotaWidget"):
+            app.main([])
+        self.assertEqual(calls, ["dpi", "tk"])
+
+    def test_common_display_scales_use_device_pixel_fonts_and_preserve_size(self):
+        for factor, width, height, text_pixels in (
+            (1, 300, 40, 11), (1.25, 375, 50, 13),
+            (1.5, 450, 60, 16), (2, 600, 80, 21),
+        ):
+            with self.subTest(factor=factor):
+                widget = object.__new__(ui.QuotaWidget)
+                widget.settings = dict(config.DEFAULTS)
+                widget._dpi_scale = factor
+                widget.W, widget.H, widget.desired_H = width, height, height
+                widget.canvas = mock.Mock()
+                widget._redraw = mock.Mock()
+                with mock.patch.object(ui.tkfont, "Font") as font:
+                    widget._build_ui()
+                self.assertEqual(widget._scale(), 1.0)
+                self.assertEqual(font.call_args_list[0].kwargs["size"], -text_pixels)
+                self.assertEqual(widget._px(300), width)
+
+    def test_primary_monitor_dpi_change_rebuilds_without_changing_saved_settings(self):
+        widget = object.__new__(ui.QuotaWidget)
+        widget._context_menu_open = False
+        widget.settings = dict(config.DEFAULTS)
+        widget.root = mock.Mock()
+        widget.root.winfo_id.return_value = 123
+        widget.W, widget.H, widget.desired_H = 300, 40, 40
+        widget._dpi_scale = 1.0
+        widget._build_ui = mock.Mock()
+        with mock.patch.object(taskbar, "primary_scale", side_effect=[1.5, 2, 1]), mock.patch.object(
+            taskbar, "position_taskbar_popup", side_effect=[(450, 60), (600, 80), (300, 40)]
+        ) as place:
+            for _ in range(3):
+                widget._position_at_taskbar()
+        self.assertEqual([call.args for call in place.call_args_list], [(123, 450, 60), (123, 600, 80), (123, 300, 40)])
+        self.assertEqual([call.kwargs["margin"] for call in place.call_args_list], [6, 8, 4])
+        self.assertEqual(widget._build_ui.call_count, 3)
+        self.assertEqual(widget.settings, config.DEFAULTS)
+        self.assertEqual((widget.W, widget.H), (300, 40))
+
+    def test_high_dpi_text_columns_scale_with_the_font(self):
+        widget = object.__new__(ui.QuotaWidget)
+        widget.settings = dict(config.DEFAULTS)
+        widget._dpi_scale = 2.0
+        widget.W, widget.H = 600, 80
+        widget._status_code = None
+        widget.data = {}
+        widget.canvas = mock.Mock()
+        widget.f_row_label = widget.f_row_pct = widget.f_row_reset = widget.f_row_stat = None
+        widget._redraw()
+        self.assertEqual([call.args[0] for call in widget.canvas.create_text.call_args_list[:4]], [18, 86, 164, 580])
+
+    def test_dialog_embedded_control_width_scales_with_canvas_coordinates(self):
+        canvas = mock.Mock()
+        canvas.find_all.return_value = (1, 2)
+        canvas.type.side_effect = ("text", "window")
+        dimensions = {"width": "292", "height": "0"}
+        canvas.itemcget.side_effect = lambda _item, key: dimensions[key]
+        canvas.scale.side_effect = lambda *args: dimensions.update(width="438")
+        ui.scale_canvas_layout(canvas, 1.5)
+        canvas.scale.assert_called_once_with("all", 0, 0, 1.5, 1.5)
+        canvas.itemconfigure.assert_called_once_with(2, width=438)
+
 
 class TokenUsageTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.home = self.temp.name
+        for name, filename in (("OFFICIAL_PRICES_PATH", "official_model_prices.json"), ("MODEL_PRICES_PATH", "model_prices.json")):
+            patch = mock.patch.object(config, name, os.path.join(self.home, filename))
+            patch.start()
+            self.addCleanup(patch.stop)
         self.rollout = os.path.join(self.home, "rollout.jsonl")
         self.db = os.path.join(self.home, "state_5.sqlite")
         db = sqlite3.connect(self.db)
@@ -2612,15 +3303,15 @@ class TokenUsageTests(unittest.TestCase):
 
         self.assertEqual(
             prices["gpt-5.6-sol"],
-            {"input": 5.0, "cached_input": 0.5, "output": 30.0},
+            {"input": 4.0, "cached_input": 0.4, "output": 20.0, "long_input": 8.0, "long_cached_input": 0.8, "long_output": 30.0},
         )
         self.assertEqual(
             prices["gpt-5.6-terra"],
-            {"input": 2.5, "cached_input": 0.25, "output": 15.0},
+            {"input": 2.0, "cached_input": 0.2, "output": 12.0, "long_input": 4.0, "long_cached_input": 0.4, "long_output": 18.0},
         )
         self.assertEqual(
             prices["gpt-5.6-luna"],
-            {"input": 1.0, "cached_input": 0.1, "output": 6.0},
+            {"input": 0.2, "cached_input": 0.02, "output": 1.2, "long_input": 0.4, "long_cached_input": 0.04, "long_output": 1.8},
         )
         cost, unknown = token_usage.estimate_event_cost_usd(
             "gpt-5.6-sol",
@@ -2632,7 +3323,7 @@ class TokenUsageTests(unittest.TestCase):
             prices=prices,
         )
         self.assertFalse(unknown)
-        self.assertAlmostEqual(cost, 4.4, places=6)
+        self.assertAlmostEqual(cost, 5.24, places=6)
 
     def test_price_uses_short_context_for_small_request_on_large_model(self):
         cost, unknown = token_usage.estimate_event_cost_usd(
@@ -2987,6 +3678,11 @@ class TokenUsageTests(unittest.TestCase):
 
 
 class UsageDashboardFormattingTests(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.object(web_dashboard.pricing, "refresh_prices", return_value={})
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def test_format_usage_summary_contains_range_totals_and_peak(self):
         data = {
             "period": "week",

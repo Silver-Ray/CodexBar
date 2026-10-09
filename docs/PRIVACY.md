@@ -21,6 +21,7 @@ CodexBar 自有数据保存在 `%LOCALAPPDATA%\CodexBar`：
 - `credentials.dat`：使用 Windows DPAPI 当前用户作用域加密的 OAuth 账号缓存。
 - `config.json`：组件尺寸、颜色、字体和刷新间隔。
 - `model_prices.json`：用户自定义模型价格。
+- `official_model_prices.json`：官网公开模型和价格的缓存。
 - `error.log` 与 `error.log.1`：经过脱敏并限制大小的诊断日志。
 
 旧版本可能在 `~/.codex/.codexbar_cfg.json` 保存显示配置。新版本只在首次迁移时读取
@@ -28,7 +29,7 @@ CodexBar 自有数据保存在 `%LOCALAPPDATA%\CodexBar`：
 
 ## 网络请求
 
-CodexBar 仅为额度功能访问：
+额度功能访问：
 
 - `https://chatgpt.com/backend-api/wham/usage`
 - `https://auth.openai.com/oauth/token`
@@ -36,6 +37,10 @@ CodexBar 仅为额度功能访问：
 请求会发送所选账号的 OAuth access token、账号 ID，或在刷新登录时发送 refresh token。
 这是查询 ChatGPT/Codex 订阅额度所必需的数据。CodexBar 不会发送 rollout、对话标题、
 工作目录、token 日报、模型价格或诊断日志。
+
+模型与价格自动更新只读取 `https://developers.openai.com/api/docs/pricing.md` 的公开文档，
+每日同步一次；失败后保留缓存并在一小时后重试。此请求不携带 OAuth 凭据、账号 ID、
+本机对话、Token 统计或自定义价格，无需 API key。仅允许跳转到 OpenAI 官方 HTTPS 文档域名。
 
 如果设置系统代理或自定义 CA，网络流量会经过用户选择的代理。用户应只信任自己控制或
 明确信任的代理与证书机构。

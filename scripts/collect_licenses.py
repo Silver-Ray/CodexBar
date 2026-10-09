@@ -10,6 +10,7 @@ import sys
 
 
 DISTRIBUTIONS = (
+    "comtypes",
     "pywebview",
     "bottle",
     "pythonnet",

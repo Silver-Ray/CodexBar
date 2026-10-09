@@ -3,6 +3,7 @@ const state = {
   selected: null,
   range: null,
   period: "week",
+  pricing: null,
 };
 let activeLoadJobId = null;
 let dayRequestGeneration = 0;
@@ -66,6 +67,7 @@ async function pollInitialLoad(jobId) {
       state.days = status.result?.days || [];
       state.selected = status.result?.selected;
       state.range = status.result?.range;
+      state.pricing = status.result?.pricing;
       renderAll();
       hideLoading();
       return;
@@ -121,6 +123,11 @@ async function selectDay(date) {
 }
 
 function renderAll() {
+  const prices = state.pricing;
+  const date = prices?.fetched_at ? new Date(prices.fetched_at * 1000).toLocaleDateString() : "--";
+  const mode = prices?.using_snapshot ? "离线价格快照" : "官网价格";
+  document.getElementById("pricingStatus").textContent =
+    `API 等价估算 · ${mode} ${date}${prices?.update_failed ? " · 同步失败，使用缓存" : " · 每日自动更新"}`;
   renderDayList();
   renderReceipt();
   renderConversations();

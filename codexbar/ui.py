@@ -8,14 +8,16 @@
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
 import threading
 import time
 import tkinter as tk
 from tkinter import colorchooser, filedialog, font as tkfont, messagebox
+from types import SimpleNamespace
 
 from . import __version__
-from . import config, diagnostics, runtime, taskbar, token_usage
+from . import config, diagnostics, dpi, pricing, runtime, taskbar, token_usage, tray
 from .credentials import (
     AuthRequiredError,
     CREDENTIAL_LOCK,
@@ -27,6 +29,7 @@ from .credentials import (
     set_active_account,
 )
 from .quota_api import QuotaData, fetch_quota, format_reset_time
+from .taskbar_display import RecordedCanvas, TaskbarDisplay
 
 
 COLORS = {
@@ -88,6 +91,7 @@ def _styled_scale(
     upper: int,
     length: int,
     command,
+    dpi_scale: float = 1.0,
 ) -> tk.Scale:
     """创建深色设置面板里默认可见的 Tk 滑块。"""
 
@@ -108,7 +112,9 @@ def _styled_scale(
         activebackground="#6dd5f5",
         bd=0,
         sliderrelief="flat",
-        length=length,
+        length=dpi.pixels(length, dpi_scale),
+        width=dpi.pixels(15, dpi_scale),
+        sliderlength=dpi.pixels(30, dpi_scale),
         command=command,
     )
 
@@ -126,6 +132,22 @@ def settings_layout_metrics() -> dict[str, int]:
     }
 
 
+def scale_canvas_layout(canvas: tk.Canvas, scale: float) -> None:
+    """Scale dialog coordinates and embedded widths, leaving fonts in pixels."""
+    window_sizes = []
+    for item in canvas.find_all():
+        if canvas.type(item) == "window":
+            for dimension in ("width", "height"):
+                value = float(canvas.itemcget(item, dimension))
+                if value:
+                    window_sizes.append((item, dimension, value))
+    canvas.scale("all", 0, 0, scale, scale)
+    # Some Tk versions already scale embedded window dimensions. Always base
+    # the final size on the original geometry so it is never scaled twice.
+    for item, dimension, value in window_sizes:
+        canvas.itemconfigure(item, **{dimension: dpi.pixels(value, scale)})
+
+
 class QuotaWidget:
     """显示 5h/每周额度并负责定时刷新的任务栏窗口。"""
 
@@ -138,11 +160,22 @@ class QuotaWidget:
         self._refresh_pending = False
         self._refresh_generation = 0
         self._closed = False
+        self._restart_requested = False
         self._status_code: str | None = None
         self._context_menu_open = False
         self._context_menu_generation = 0
+        self._collapsed = False
+        self._tray_entry = None
+        self._tray_mode = False
+        self._hover_window = None
+        self._hover_show_id = None
+        self._hover_hide_id = None
+        self._hover_visible = False
+        self._dashboard_click_id = None
+        self._taskbar_display = None
         self.data = self._empty_data()
 
+        root.withdraw()
         root.overrideredirect(True)
         root.attributes("-topmost", True)
         try:
@@ -152,21 +185,27 @@ class QuotaWidget:
             pass
         root.configure(bg=config.MAGIC)
 
-        self.W = self.settings["width"]
-        self.desired_H = self.settings["height"]
+        self._dpi_scale = taskbar.primary_scale()
+        self.W = self._px(self.settings["width"])
+        self.desired_H = self._px(self.settings["height"])
         self.H = self.desired_H
         root.geometry(f"{self.W}x{self.H}")
 
-        self.canvas = tk.Canvas(root, bg=config.MAGIC, highlightthickness=0)
+        self.canvas = RecordedCanvas(root, bg=config.MAGIC, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self._build_ui()
         self._bind_mouse()
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.update_idletasks()
+        if os.name == "nt":
+            self._taskbar_display = TaskbarDisplay()
+            self._redraw()
         self._position_at_taskbar()
 
         self.refresh_async()
         self._tick()
+        self._poll_tray()
+        self._poll_display()
 
     def _empty_data(self) -> dict:
         return {
@@ -178,13 +217,66 @@ class QuotaWidget:
     def _position_at_taskbar(self) -> None:
         if self._context_menu_open:
             return
-        target_height = getattr(self, "desired_H", self.H)
-        positioned = taskbar.position_taskbar_popup(
-            self.root.winfo_id(), self.W, target_height, margin=4
-        )
-        if positioned and positioned[1] != self.H:
-            self.H = positioned[1]
+        old_scale = getattr(self, "_dpi_scale", 1.0)
+        self._dpi_scale = taskbar.primary_scale()
+        settings = getattr(self, "settings", {})
+        target_height = self._px(settings.get(
+            "height", getattr(self, "desired_H", self.H) / old_scale
+        ))
+        target_width = self._px(settings.get("width", self.W / old_scale))
+        self.desired_H = target_height
+        display = getattr(self, "_taskbar_display", None)
+        if display:
+            placement = taskbar.taskbar_placement(
+                target_width, target_height, margin=self._px(4), compact_width=self._px(96),
+            )
+            if placement:
+                info, bounds = placement
+                display.place(info, bounds)
+                positioned = (bounds[2] - bounds[0], bounds[3] - bounds[1])
+            else:
+                display.hide()
+                positioned = None
+        else:
+            positioned = taskbar.position_taskbar_popup(
+                self.root.winfo_id(), target_width, target_height, margin=self._px(4),
+                compact_width=self._px(96),
+            )
+        if not positioned:
+            self.root.withdraw()
+            self._tray_mode = True
+            self._collapsed = True
+            if old_scale != self._dpi_scale:
+                self._build_ui()
+            self._update_tray()
+            if getattr(self, "_hover_visible", False):
+                self._position_hover()
+            return
+        was_tray = getattr(self, "_tray_mode", False)
+        self._tray_mode = False
+        entry = getattr(self, "_tray_entry", None)
+        if entry:
+            entry.hide()
+        if not display and self.root.state() == "withdrawn":
+            self.root.deiconify()
+            # Tk may restore its saved geometry; apply physical bounds again.
+            taskbar.position_taskbar_popup(
+                self.root.winfo_id(), target_width, target_height, margin=self._px(4),
+                compact_width=self._px(96),
+            )
+        collapsed = positioned[0] < target_width
+        changed = collapsed != getattr(self, "_collapsed", False)
+        self._collapsed = collapsed
+        if was_tray or not collapsed:
+            self._hide_hover()
+        if positioned != (self.W, self.H) or old_scale != self._dpi_scale or changed:
+            self.W, self.H = positioned
             self._build_ui()
+        if getattr(self, "_hover_visible", False):
+            self._position_hover()
+
+    def _px(self, value: float) -> int:
+        return dpi.pixels(value, getattr(self, "_dpi_scale", 1.0))
 
     def _scale(self) -> float:
         # 字体按用户设置的目标高度计算，避免任务栏临时返回较小高度时文字跳小。
@@ -194,7 +286,9 @@ class QuotaWidget:
             config.FONT_SCALE_MIN,
             config.FONT_SCALE_MAX,
         ) / 100
-        base_scale = min(self.W / config.BASE_W, target_height / config.BASE_H)
+        display_scale = getattr(self, "_dpi_scale", 1.0)
+        full_width = self._px(self.settings.get("width", self.W / display_scale))
+        base_scale = min(full_width / config.BASE_W, target_height / config.BASE_H) / display_scale
         return config.clamp(base_scale * font_scale, 0.75, 1.35)
 
     def _preview_font_scale(self, value: object) -> None:
@@ -233,18 +327,13 @@ class QuotaWidget:
 
         self.settings.update(snapshot)
         set_colors(self.settings)
-        self.W = int(self.settings["width"])
-        self.desired_H = int(self.settings["height"])
-        self.H = self.desired_H
-        self.root.geometry(f"{self.W}x{self.H}")
-        self._build_ui()
-        self._position_at_taskbar()
+        self._apply_widget_geometry_from_settings()
 
     def _apply_widget_geometry_from_settings(self) -> None:
         """按当前设置刷新任务栏窗口尺寸和位置。"""
 
-        self.W = int(self.settings["width"])
-        self.desired_H = int(self.settings["height"])
+        self.W = self._px(self.settings["width"])
+        self.desired_H = self._px(self.settings["height"])
         self.H = self.desired_H
         self.root.geometry(f"{self.W}x{self.H}")
         self._build_ui()
@@ -252,7 +341,9 @@ class QuotaWidget:
 
     def _build_ui(self) -> None:
         scale = self._scale()
-        font_size = lambda base: max(6, round(base * scale))
+        font_size = lambda base: dpi.font_pixels(
+            max(6, base * scale), getattr(self, "_dpi_scale", 1.0)
+        )
         self.canvas.config(width=self.W, height=self.H)
         self.f_row_label = tkfont.Font(
             family="Segoe UI", size=font_size(8), weight="bold"
@@ -270,15 +361,22 @@ class QuotaWidget:
         self._redraw()
 
     def _redraw(self) -> None:
-        canvas = self.canvas
+        self._draw(self.canvas, self.W, self.H, getattr(self, "_collapsed", False))
+        display = getattr(self, "_taskbar_display", None)
+        if display:
+            display.draw(self.canvas.commands)
+        if getattr(self, "_hover_visible", False):
+            self._draw(self._hover_canvas, self._hover_width, self._hover_height, False)
+
+    def _draw(self, canvas, width: int, height: int, compact: bool) -> None:
         canvas.delete("all")
-        radius = max(8, min(14, self.H // 2 - 1))
+        radius = max(self._px(8), min(self._px(14), height // 2 - 1))
         background = config.valid_widget_background(
             self.settings.get("widget_background")
         )
         ordinary_fg = contrast_foreground(background)
         canvas.create_polygon(
-            round_rect_points(1, 1, self.W - 1, self.H - 1, radius),
+            round_rect_points(1, 1, width - 1, height - 1, radius),
             smooth=True,
             fill=background,
             outline=config.BORDER,
@@ -286,9 +384,9 @@ class QuotaWidget:
 
         if self._status_code:
             canvas.create_text(
-                self.W / 2,
-                self.H / 2,
-                text=f"CodexBar {self._status_code}",
+                width / 2,
+                height / 2,
+                text=self._status_code if compact else f"CodexBar {self._status_code}",
                 anchor="center",
                 fill=config.LOW,
                 font=self.f_status,
@@ -297,7 +395,7 @@ class QuotaWidget:
 
         rows = self.data.get("rows", {})
         usage = self.data.get("usage", {})
-        row_y = (self.H * 0.28, self.H * 0.72)
+        row_y = (height * 0.28, height * 0.72)
         for y, key, label in (
             (row_y[0], "h", "5h"),
             (row_y[1], "w", "每周"),
@@ -307,19 +405,21 @@ class QuotaWidget:
             percent_text = "--" if percent is None else f"{percent:.0f}%"
             reset_text = format_reset_time(row.get("reset")) or "--"
             canvas.create_text(
-                9, y, text=label, anchor="w", fill=config.ACCENT, font=self.f_row_label
+                self._px(9), round(y), text=label, anchor="w", fill=config.ACCENT, font=self.f_row_label
             )
             canvas.create_text(
-                43,
-                y,
+                width - self._px(9) if compact else self._px(43),
+                round(y),
                 text=percent_text,
-                anchor="w",
+                anchor="e" if compact else "w",
                 fill=quota_color(percent),
                 font=self.f_row_pct,
             )
+            if compact:
+                continue
             canvas.create_text(
-                82,
-                y,
+                self._px(82),
+                round(y),
                 text=reset_text,
                 anchor="w",
                 fill=ordinary_fg,
@@ -327,8 +427,8 @@ class QuotaWidget:
             )
             stat_text = usage.get("tokens") if key == "h" else usage.get("cost")
             canvas.create_text(
-                self.W - 10,
-                y,
+                width - self._px(10),
+                round(y),
                 text=stat_text or "--",
                 anchor="e",
                 fill=config.ACCENT if key == "h" else ordinary_fg,
@@ -336,14 +436,178 @@ class QuotaWidget:
             )
 
     def _bind_mouse(self) -> None:
-        self.canvas.bind("<Button-1>", lambda _event: self.refresh_async())
-        self.canvas.bind("<Double-Button-1>", lambda _event: self.open_settings())
+        self.canvas.bind("<Button-1>", self._on_dashboard_click)
+        self.canvas.bind("<Double-Button-1>", self._on_settings_double_click)
         self.canvas.bind("<Button-3>", self._on_right_click)
-        self.canvas.bind("<Enter>", lambda _event: self.canvas.config(cursor="hand2"))
-        self.canvas.bind("<Leave>", lambda _event: self.canvas.config(cursor=""))
+        self.canvas.bind("<Enter>", self._enter_bar)
+        self.canvas.bind("<Leave>", self._leave_bar)
+
+    def _on_dashboard_click(self, _event=None) -> None:
+        self._cancel_hover_timer("_dashboard_click_id")
+        self._dashboard_click_id = self.root.after(
+            taskbar.double_click_interval(), self._finish_dashboard_click
+        )
+
+    def _finish_dashboard_click(self) -> None:
+        self._dashboard_click_id = None
+        if not self._closed:
+            self._hide_hover()
+            self.open_usage_dashboard()
+
+    def _on_settings_double_click(self, _event=None) -> None:
+        self._cancel_hover_timer("_dashboard_click_id")
+        self._hide_hover()
+        self.open_settings()
+
+    def _cancel_hover_timer(self, attribute: str) -> None:
+        timer = getattr(self, attribute, None)
+        if timer:
+            self.root.after_cancel(timer)
+            setattr(self, attribute, None)
+
+    def _enter_bar(self, _event=None) -> None:
+        self.canvas.config(cursor="hand2")
+        self._cancel_hover_timer("_hover_hide_id")
+        if getattr(self, "_collapsed", False) and not self._context_menu_open:
+            self._cancel_hover_timer("_hover_show_id")
+            self._hover_show_id = self.root.after(150, self._show_hover)
+
+    def _leave_bar(self, _event=None) -> None:
+        self.canvas.config(cursor="")
+        self._cancel_hover_timer("_hover_show_id")
+        self._cancel_hover_timer("_hover_hide_id")
+        self._hover_hide_id = self.root.after(250, self._check_hover_leave)
+
+    def _hover_anchor(self):
+        if getattr(self, "_tray_mode", False):
+            return self._tray_entry.bounds() if self._tray_entry else None
+        display = getattr(self, "_taskbar_display", None)
+        return display.bounds() if display else taskbar.window_bounds(self.root.winfo_id())
+
+    def _position_hover(self) -> bool:
+        anchor = self._hover_anchor()
+        if not anchor:
+            return False
+        size = taskbar.position_hover_popup(
+            self._hover_window.winfo_id(), anchor,
+            self._px(self.settings["width"]), self.desired_H, margin=self._px(4),
+        )
+        if size:
+            self._hover_width, self._hover_height = size
+            self._hover_canvas.config(width=size[0], height=size[1])
+        return bool(size)
+
+    def _show_hover(self) -> None:
+        self._hover_show_id = None
+        if self._closed or not self._collapsed or self._context_menu_open:
+            return
+        if self._hover_window is None:
+            window = self._hover_window = tk.Toplevel(self.root)
+            window.withdraw()
+            window.overrideredirect(True)
+            window.attributes("-topmost", True)
+            window.attributes("-toolwindow", True)
+            window.attributes("-transparentcolor", config.MAGIC)
+            window.configure(bg=config.MAGIC)
+            self._hover_canvas = tk.Canvas(window, bg=config.MAGIC, highlightthickness=0)
+            self._hover_canvas.pack(fill="both", expand=True)
+            self._hover_canvas.bind("<Enter>", lambda _e: self._cancel_hover_timer("_hover_hide_id"))
+            self._hover_canvas.bind("<Leave>", self._leave_bar)
+            self._hover_canvas.bind("<Button-1>", self._on_dashboard_click)
+            self._hover_canvas.bind("<Double-Button-1>", self._on_settings_double_click)
+            self._hover_canvas.bind("<Button-3>", self._on_right_click)
+        self._hover_window.update_idletasks()
+        if not self._position_hover():
+            self._hide_hover()
+            return
+        self._hover_window.deiconify()
+        self._position_hover()
+        self._hover_visible = True
+        self._redraw()
+
+    def _check_hover_leave(self) -> None:
+        self._hover_hide_id = None
+        if not self._hover_visible:
+            return
+        x, y = self.root.winfo_pointerxy()
+        bounds = [self._hover_anchor(), taskbar.window_bounds(self._hover_window.winfo_id())]
+        if any(rect and rect[0] - self._px(6) <= x < rect[2] + self._px(6)
+               and rect[1] - self._px(6) <= y < rect[3] + self._px(6) for rect in bounds):
+            self._hover_hide_id = self.root.after(250, self._check_hover_leave)
+        elif self._context_menu_open:
+            self._hover_hide_id = self.root.after(250, self._check_hover_leave)
+        else:
+            self._hide_hover()
+
+    def _hide_hover(self) -> None:
+        self._cancel_hover_timer("_hover_show_id")
+        self._cancel_hover_timer("_hover_hide_id")
+        window = getattr(self, "_hover_window", None)
+        if window:
+            window.withdraw()
+        self._hover_visible = False
+
+    def _update_tray(self) -> None:
+        if os.name != "nt":
+            return
+        if getattr(self, "_tray_entry", None) is None:
+            self._tray_entry = tray.TrayEntry()
+        rows = self.data.get("rows", {})
+        amounts = []
+        for key, label in (("h", "5h"), ("w", "每周")):
+            percent = rows.get(key, {}).get("remain")
+            amounts.append(f"{label} {'--' if percent is None else f'{percent:.0f}%'}")
+        self._tray_entry.show("CodexBar " + " / ".join(amounts))
+
+    def _poll_display(self) -> None:
+        """Dispatch plain pointer packets on the independent application UI."""
+        if self._closed:
+            return
+        display = self._taskbar_display
+        if display:
+            while True:
+                try:
+                    action, x, y = display.events.get_nowait()
+                except queue.Empty:
+                    break
+                if action == "click":
+                    self._on_dashboard_click()
+                elif action == "settings":
+                    self._on_settings_double_click()
+                elif action == "menu":
+                    self._on_right_click(SimpleNamespace(x_root=x, y_root=y))
+                elif action == "hover":
+                    self._enter_bar()
+                elif action == "leave":
+                    self._leave_bar()
+                elif action == "close":
+                    self.close()
+                    return
+        self.root.after(25, self._poll_display)
+
+    def _poll_tray(self) -> None:
+        if self._closed:
+            return
+        entry = self._tray_entry
+        if entry:
+            events, entry.events = entry.events, []
+            for event in events:
+                if event == "hover":
+                    self._enter_bar()
+                elif event == "leave":
+                    self._leave_bar()
+                elif event == "click":
+                    self._on_dashboard_click()
+                elif event == "settings":
+                    self._on_settings_double_click()
+                elif event == "menu":
+                    x, y = self.root.winfo_pointerxy()
+                    self._on_right_click(type("TrayEvent", (), {"x_root": x, "y_root": y})())
+        self.root.after(100, self._poll_tray)
 
     def _on_right_click(self, event) -> None:
-        menu = tk.Menu(self.root, tearoff=0)
+        menu_font = ("Segoe UI", dpi.font_pixels(9, self._dpi_scale))
+        menu = tk.Menu(self.root, tearoff=0, font=menu_font)
         menu.add_command(
             label="立即刷新", command=self._menu_command(self.refresh_async)
         )
@@ -365,7 +629,7 @@ class QuotaWidget:
             accounts = list_accounts()
         except Exception:
             accounts = []
-        account_menu = tk.Menu(menu, tearoff=0)
+        account_menu = tk.Menu(menu, tearoff=0, font=menu_font)
         if accounts:
             for account in accounts:
                 label = f"{'✓ ' if account['active'] else ''}{account['label']}"
@@ -474,6 +738,7 @@ class QuotaWidget:
 
         current = getattr(self, "_usage_dashboard_process", None)
         if current and current.poll() is None:
+            taskbar.activate_process_window(current.pid)
             return
         command, cwd = runtime.dashboard_command()
         try:
@@ -534,6 +799,14 @@ class QuotaWidget:
         if getattr(self, "_closed", False):
             return
         self._closed = True
+        self._cancel_hover_timer("_dashboard_click_id")
+        self._hide_hover()
+        entry = getattr(self, "_tray_entry", None)
+        if entry:
+            entry.close()
+        display = getattr(self, "_taskbar_display", None)
+        if display:
+            display.close()
         self._refresh_generation += 1
         self._refresh_pending = False
         if self._refresh_after_id:
@@ -542,6 +815,14 @@ class QuotaWidget:
             except (tk.TclError, RuntimeError):
                 pass
             self._refresh_after_id = None
+        # A new Tk interpreter can otherwise receive old poll/menu callbacks
+        # after Explorer recovery, referring to commands destroyed with root.
+        try:
+            pending = self.root.tk.splitlist(self.root.tk.call("after", "info"))
+            for callback_id in pending:
+                self.root.after_cancel(callback_id)
+        except (tk.TclError, RuntimeError, TypeError):
+            pass
         self.root.destroy()
 
     def open_settings(self) -> None:
@@ -563,13 +844,20 @@ class QuotaWidget:
         window.configure(bg=config.MAGIC)
 
         original_settings = dict(self.settings)
+        scale = self._dpi_scale
+        px = lambda value: dpi.pixels(value, scale)
+        font_size = lambda points: dpi.font_pixels(points, scale)
         layout = settings_layout_metrics()
         width, height = layout["width"], layout["height"]
-        x = max(0, self.root.winfo_rootx() - width + self.W)
-        y = self.root.winfo_rooty() - height - 8
+        anchor = self._hover_anchor()
+        if not anchor:
+            info = taskbar.primary_taskbar()
+            anchor = taskbar._info_bounds(info) if info else (0, px(height + 8), px(width), px(height + 8))
+        x = max(0, anchor[2] - px(width))
+        y = anchor[1] - px(height + 8)
         if y < 0:
-            y = self.root.winfo_rooty() + self.H + 8
-        window.geometry(f"{width}x{height}+{x}+{y}")
+            y = anchor[3] + px(8)
+        window.geometry(f"{px(width)}x{px(height)}{x:+d}{y:+d}")
 
         canvas = tk.Canvas(window, bg=config.MAGIC, highlightthickness=0)
         canvas.pack(fill="both", expand=True)
@@ -580,14 +868,14 @@ class QuotaWidget:
             outline=config.BORDER,
         )
 
-        heading_font = tkfont.Font(family="Bahnschrift SemiBold", size=14)
-        section_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
-        label_font = tkfont.Font(family="Segoe UI", size=9)
+        heading_font = tkfont.Font(family="Bahnschrift SemiBold", size=font_size(14))
+        section_font = tkfont.Font(family="Segoe UI", size=font_size(9), weight="bold")
+        label_font = tkfont.Font(family="Segoe UI", size=font_size(9))
         close_font = tkfont.Font(
-            family="Segoe UI", size=layout["close_font_size"], weight="bold"
+            family="Segoe UI", size=font_size(layout["close_font_size"]), weight="bold"
         )
-        value_font = tkfont.Font(family="Cascadia Mono", size=9, weight="bold")
-        tiny_font = tkfont.Font(family="Segoe UI", size=8)
+        value_font = tkfont.Font(family="Cascadia Mono", size=font_size(9), weight="bold")
+        tiny_font = tkfont.Font(family="Segoe UI", size=font_size(8))
 
         canvas.create_text(
             22, 18, text="CodexBar", anchor="nw", fill=config.FG, font=heading_font
@@ -640,6 +928,7 @@ class QuotaWidget:
                 parent,
                 text=text,
                 width=button_width,
+                font=label_font,
                 relief="flat",
                 cursor="hand2",
                 bg=config.ACCENT if primary else config.BAR_BG,
@@ -693,6 +982,7 @@ class QuotaWidget:
             config.REFRESH_MAX,
             292,
             set_refresh_value,
+            dpi_scale=scale,
         )
         canvas.create_window(26, 156, anchor="nw", window=refresh_scale, width=292)
 
@@ -703,7 +993,7 @@ class QuotaWidget:
                 f"{minutes} min",
                 lambda value=minutes: set_refresh_value(value),
                 button_width=6,
-            ).pack(side="left", padx=(0, 7))
+            ).pack(side="left", padx=(0, px(7)))
         canvas.create_window(26, 194, anchor="nw", window=presets)
 
         section_title(238, "显示", "直接调整任务栏本体")
@@ -722,6 +1012,7 @@ class QuotaWidget:
             config.W_MAX,
             292,
             preview_width,
+            dpi_scale=scale,
         )
         canvas.create_window(26, 298, anchor="nw", window=width_scale, width=292)
 
@@ -740,6 +1031,7 @@ class QuotaWidget:
             config.FONT_SCALE_MAX,
             292,
             preview_font_scale,
+            dpi_scale=scale,
         )
         canvas.create_window(26, 364, anchor="nw", window=font_scale, width=292)
 
@@ -791,7 +1083,7 @@ class QuotaWidget:
             button_width=8,
         )
         update_background_swatch(background_var.get())
-        background_swatch.pack(side="left", padx=(0, 8))
+        background_swatch.pack(side="left", padx=(0, px(8)))
         make_button(
             background_row,
             "恢复默认",
@@ -826,7 +1118,7 @@ class QuotaWidget:
                 fg=config.BG,
                 activebackground=color_vars[key].get(),
             )
-            swatch.pack(side="left", padx=(0, 8))
+            swatch.pack(side="left", padx=(0, px(8)))
             swatches[key] = swatch
 
             def pick_color(color_key=key):
@@ -892,6 +1184,7 @@ class QuotaWidget:
         canvas.create_window(
             width - 112, layout["action_button_y"], anchor="se", window=cancel_button
         )
+        scale_canvas_layout(canvas, scale)
 
     def _persist_settings(self, parent: tk.Misc) -> bool:
         """Save settings and keep the editor open when the disk write fails."""
@@ -925,17 +1218,26 @@ class QuotaWidget:
         except tk.TclError:
             pass
         window.configure(bg=config.CARD)
-        win_w, win_h = 780, 360
-        x = max(0, parent.winfo_rootx() + 16)
-        y = max(0, parent.winfo_rooty() - win_h - 8)
+        scale = dpi.window_scale(parent.winfo_id())
+        px = lambda value: dpi.pixels(value, scale)
+        font_size = lambda points: dpi.font_pixels(points, scale)
+        screen_width, screen_height = window.winfo_screenwidth(), window.winfo_screenheight()
+        win_w = min(px(820), screen_width - px(32))
+        win_h = min(px(480), screen_height - px(96))
+        x = parent.winfo_rootx() + px(16)
+        y = parent.winfo_rooty() - win_h - px(8)
         if y < 0:
-            y = parent.winfo_rooty() + parent.winfo_height() + 8
-        window.geometry(f"{win_w}x{win_h}+{x}+{y}")
-        window.resizable(False, False)
+            y = parent.winfo_rooty() + parent.winfo_height() + px(8)
+        x = max(0, min(x, screen_width - win_w))
+        y = max(0, min(y, screen_height - win_h))
+        window.geometry(f"{win_w}x{win_h}{x:+d}{y:+d}")
+        window.resizable(True, True)
+        window.grid_columnconfigure(0, weight=1)
+        window.grid_rowconfigure(2, weight=1)
 
-        heading_font = tkfont.Font(family="Segoe UI", size=11, weight="bold")
-        label_font = tkfont.Font(family="Segoe UI", size=9)
-        small_font = tkfont.Font(family="Segoe UI", size=8)
+        heading_font = tkfont.Font(family="Segoe UI", size=font_size(11), weight="bold")
+        label_font = tkfont.Font(family="Segoe UI", size=font_size(9))
+        small_font = tkfont.Font(family="Segoe UI", size=font_size(8))
 
         tk.Label(
             window,
@@ -943,19 +1245,32 @@ class QuotaWidget:
             bg=config.CARD,
             fg=config.ACCENT,
             font=heading_font,
-        ).grid(row=0, column=0, columnspan=7, sticky="w", padx=16, pady=(14, 2))
+        ).grid(row=0, column=0, columnspan=7, sticky="w", padx=px(16), pady=(px(14), px(2)))
         tk.Label(
             window,
-            text="空白表示不覆盖；恢复官方价格会删除本地价格文件。",
+            text="官网价格每日自动更新；离线使用缓存。本地修改优先于官网价格。",
             bg=config.CARD,
             fg=config.SUB,
             font=small_font,
-        ).grid(row=1, column=0, columnspan=7, sticky="w", padx=16, pady=(0, 10))
+        ).grid(row=1, column=0, columnspan=7, sticky="w", padx=px(16), pady=(0, px(10)))
 
-        table = tk.Frame(window, bg=config.CARD)
-        table.grid(row=2, column=0, columnspan=7, sticky="nw", padx=16)
+        table_container = tk.Frame(window, bg=config.CARD)
+        table_container.grid(row=2, column=0, columnspan=7, sticky="nsew", padx=px(16))
+        table_container.grid_columnconfigure(0, weight=1)
+        table_container.grid_rowconfigure(0, weight=1)
+        viewport = tk.Canvas(table_container, bg=config.CARD, highlightthickness=0)
+        vertical = tk.Scrollbar(table_container, orient="vertical", command=viewport.yview)
+        horizontal = tk.Scrollbar(table_container, orient="horizontal", command=viewport.xview)
+        viewport.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        viewport.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        table = tk.Frame(viewport, bg=config.CARD)
+        viewport.create_window(0, 0, window=table, anchor="nw")
+        table.bind("<Configure>", lambda _e: viewport.configure(scrollregion=viewport.bbox("all")))
+        window.bind("<MouseWheel>", lambda e: viewport.yview_scroll(-int(e.delta / 120), "units"))
         headers = (
-            ("model", "模型", 18),
+            ("model", "模型", 28),
             ("input", "输入", 9),
             ("cached_input", "缓存", 9),
             ("output", "输出", 9),
@@ -972,14 +1287,15 @@ class QuotaWidget:
                 fg=config.FG,
                 font=label_font,
                 anchor="w",
-            ).grid(row=0, column=column, padx=(0, 6), pady=(0, 4), sticky="w")
+            ).grid(row=0, column=column, padx=(0, px(6)), pady=(0, px(4)), sticky="w")
 
         overrides = token_usage.load_model_price_overrides()
-        model_names = list(token_usage.DEFAULT_MODEL_PRICES)
+        official_prices = pricing.load_official_prices()
+        model_names = list(official_prices)
         model_names.extend(
             name
             for name in sorted(overrides)
-            if name not in token_usage.DEFAULT_MODEL_PRICES
+            if name not in official_prices
         )
         model_names.append("")
         rows: list[tuple[tk.StringVar, dict[str, tk.StringVar]]] = []
@@ -991,7 +1307,7 @@ class QuotaWidget:
             model_var = tk.StringVar(value=model)
             entry_options = {
                 "textvariable": model_var,
-                "width": 18,
+                "width": 28,
                 "relief": "flat",
                 "bg": config.BAR_BG,
                 "fg": config.FG,
@@ -1005,10 +1321,10 @@ class QuotaWidget:
                     disabledbackground=config.BAR_BG,
                     disabledforeground=config.FG,
                 )
-            model_entry.grid(row=row_index, column=0, padx=(0, 6), pady=3, sticky="w")
+            model_entry.grid(row=row_index, column=0, padx=(0, px(6)), pady=px(3), sticky="w")
 
             price_vars: dict[str, tk.StringVar] = {}
-            base = token_usage.DEFAULT_MODEL_PRICES.get(model, {})
+            base = official_prices.get(model, {})
             override = overrides.get(model, {})
             for column, key in enumerate(token_usage.PRICE_KEYS, start=1):
                 value = override.get(key, base.get(key))
@@ -1023,7 +1339,7 @@ class QuotaWidget:
                     fg=config.FG,
                     insertbackground=config.FG,
                     font=label_font,
-                ).grid(row=row_index, column=column, padx=(0, 6), pady=3, sticky="w")
+                ).grid(row=row_index, column=column, padx=(0, px(6)), pady=px(3), sticky="w")
             rows.append((model_var, price_vars))
 
         def collect_overrides() -> dict:
@@ -1044,9 +1360,9 @@ class QuotaWidget:
                         raise ValueError(f"{model} 的价格必须是非负数字") from exc
                     if parsed is not None:
                         values[key] = parsed
-                base = token_usage.DEFAULT_MODEL_PRICES.get(model)
+                base = official_prices.get(model)
                 if base:
-                    completed = token_usage.complete_price_override(model, values)
+                    completed = token_usage.complete_price_override(model, values, base_prices=official_prices)
                     changed = any(
                         key not in base
                         or abs(completed[key] - base[key]) > 1e-9
@@ -1057,7 +1373,7 @@ class QuotaWidget:
                 elif values:
                     try:
                         result[model] = token_usage.complete_price_override(
-                            model, values
+                            model, values, base_prices=official_prices
                         )
                     except ValueError as exc:
                         raise ValueError(
@@ -1081,7 +1397,7 @@ class QuotaWidget:
             window.destroy()
 
         button_row = tk.Frame(window, bg=config.CARD)
-        button_row.grid(row=3, column=0, columnspan=7, sticky="e", padx=16, pady=16)
+        button_row.grid(row=3, column=0, columnspan=7, sticky="e", padx=px(16), pady=px(16))
         for text, command, background, foreground in (
             ("恢复官方价格", restore_official_prices, config.BAR_BG, config.FG),
             ("取消", window.destroy, config.BAR_BG, config.FG),
@@ -1091,6 +1407,7 @@ class QuotaWidget:
                 button_row,
                 text=text,
                 width=12,
+                font=label_font,
                 relief="flat",
                 cursor="hand2",
                 bg=background,
@@ -1099,7 +1416,7 @@ class QuotaWidget:
                 activeforeground=config.FG,
                 bd=0,
                 command=command,
-            ).pack(side="left", padx=(8, 0))
+            ).pack(side="left", padx=(px(8), 0))
 
     def refresh_async(self) -> None:
         """Coalesce refresh requests so only one worker runs at a time."""
@@ -1131,6 +1448,7 @@ class QuotaWidget:
     def _refresh_worker(self, generation: int | None = None) -> None:
         if generation is None:
             generation = getattr(self, "_refresh_generation", 0)
+        pricing.refresh_prices()
         try:
             data = fetch_quota()
             try:
@@ -1249,7 +1567,11 @@ class QuotaWidget:
     def _tick(self) -> None:
         if getattr(self, "_closed", False):
             return
-        # explorer 重启、任务栏尺寸变化后，定期重新建立 owner 和位置。
+        if not taskbar.window_exists(self.root.winfo_id()):
+            self._restart_requested = True
+            self.root.quit()
+            return
+        # Explorer 重启或任务栏尺寸变化后重新定位；失去原生窗口则重建 Tk。
         self._position_at_taskbar()
         self._redraw()
-        self.root.after(5 * 1000, self._tick)
+        self.root.after(500, self._tick)

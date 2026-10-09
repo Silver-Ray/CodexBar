@@ -60,9 +60,10 @@ wheels = [
 
 [[package]]
 name = "codexbar"
-version = "0.1.0"
+version = "0.2.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "comtypes", marker = "sys_platform == 'win32'" },
     { name = "pywebview", marker = "sys_platform == 'win32'" },
 ]
 
@@ -72,10 +73,22 @@ build = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pywebview", specifier = ">=6.2.1" }]
+requires-dist = [
+    { name = "comtypes", marker = "sys_platform == 'win32'", specifier = ">=1.4.16" },
+    { name = "pywebview", specifier = ">=6.2.1" },
+]
 
 [package.metadata.requires-dev]
 build = [{ name = "pyinstaller", specifier = "==6.21.0" }]
+
+[[package]]
+name = "comtypes"
+version = "1.4.17"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/ff/c7836bd0d78fc615281016f154f514e9d523d7cb9ab9e8b4d344adc5f5e7/comtypes-1.4.17.tar.gz", hash = "sha256:3d9c1e92ad8daf7600d371e76ee16161a627a5fb70c3144f6e52e78af6034363", size = 262743, upload-time = "2026-09-21T08:08:07.687Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/89/9c/d0bc1fb69ad22a04bdc01dd9b5613a2ebc4d02ba1ec24b02127dc93791ba/comtypes-1.4.17-py3-none-any.whl", hash = "sha256:4e0a221dde2c589b82977bed802efd71cd5eb67a380347b732e02735e597f586", size = 298743, upload-time = "2026-09-21T08:08:06.461Z" },
+]
 
 [[package]]
 name = "packaging"
@@ -122,8 +135,11 @@ dependencies = [
     { name = "pywin32-ctypes", marker = "sys_platform == 'win32'" },
     { name = "setuptools", marker = "sys_platform == 'win32'" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/d5/4d/ec706c3fcf39e26888c35b39615ff4d5865d184069666c47492cff1fbe50/pyinstaller-6.21.0.tar.gz", hash = "sha256:bb9fab705983e393a2d1cac77d6972513057ad800215fd861dc15ff5272e98fd", size = 4061519, upload-time = "2026-06-13T14:15:06.25Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/fa/ca1d7e5257dd8566a9dfc0dfb02f8a8075eeb53d4b2d3c579f1276759042/pyinstaller-6.21.0-py3-none-win_amd64.whl", hash = "sha256:7fae06c494ce0ebfe6bd3055c0e409def884f63af2e3705d06bd431ad9237fc7" },
+    { url = "https://files.pythonhosted.org/packages/c9/76/1ce8a27ce62ba8cf3a87c9ce6d575610f4e55d7cb0123e7512fc3f4b921a/pyinstaller-6.21.0-py3-none-win32.whl", hash = "sha256:c6b28d30d8fd99ce162ff3aab5013ed44dbfb747566b1f01b9bed7964d7c14e9", size = 1336462, upload-time = "2026-06-13T14:14:35.785Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/fa/ca1d7e5257dd8566a9dfc0dfb02f8a8075eeb53d4b2d3c579f1276759042/pyinstaller-6.21.0-py3-none-win_amd64.whl", hash = "sha256:7fae06c494ce0ebfe6bd3055c0e409def884f63af2e3705d06bd431ad9237fc7", size = 1397487, upload-time = "2026-06-13T14:14:42.328Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/75/21b51523ce8d96629b71311775a0a65f5f5a872124ab0de33e5c848f8bff/pyinstaller-6.21.0-py3-none-win_arm64.whl", hash = "sha256:f13c95c9c03fb567217135919f93815c305813126780b0ed6e0123cb8acaf025", size = 1346094, upload-time = "2026-06-13T14:14:48.914Z" },
 ]
 
 [[package]]

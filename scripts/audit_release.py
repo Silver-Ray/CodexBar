@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import re
+import sys
 from typing import NamedTuple
 
 
@@ -45,7 +46,35 @@ PRIVATE_PATH_PATTERNS = (
 )
 
 
-def audit_release(root: Path) -> list[Finding]:
+def _unchanged_python_binary(
+    path: Path, root: Path, content: bytes, runtime_root: Path | None,
+) -> bool:
+    """Recognize original interpreter binaries, not arbitrary bundled files.
+
+    Standalone Python builds can retain their upstream build-machine paths.
+    Accept those paths only in byte-identical binaries from the interpreter
+    used to build this release. Credential checks still apply to every file.
+    """
+    if runtime_root is None:
+        return False
+    runtime_root = runtime_root.resolve()
+    if runtime_root.is_relative_to(root):
+        return False  # The release cannot act as its own trusted reference.
+    relative = path.relative_to(root)
+    if (len(relative.parts) != 2 or relative.parts[0] != "_internal"
+            or path.suffix.casefold() not in {".dll", ".pyd"}):
+        return False
+    for candidate in (runtime_root / path.name, runtime_root / "DLLs" / path.name):
+        try:
+            if (candidate.resolve().is_relative_to(runtime_root)
+                    and candidate.is_file() and candidate.read_bytes() == content):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def audit_release(root: Path, runtime_root: Path | None = None) -> list[Finding]:
     """Return non-sensitive findings for one assembled release directory."""
 
     root = Path(root).resolve()
@@ -70,7 +99,8 @@ def audit_release(root: Path) -> list[Finding]:
             continue
         if any(pattern.search(content) for pattern in CREDENTIAL_PATTERNS):
             findings.append(Finding(relative, "credential-pattern"))
-        if any(pattern.search(content) for pattern in PRIVATE_PATH_PATTERNS):
+        if (any(pattern.search(content) for pattern in PRIVATE_PATH_PATTERNS)
+                and not _unchanged_python_binary(path, root, content, runtime_root)):
             findings.append(Finding(relative, "private-path"))
     return findings
 
@@ -78,8 +108,14 @@ def audit_release(root: Path) -> list[Finding]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("release_dir", type=Path)
+    parser.add_argument(
+        "--verify-python-runtime", action="store_true",
+        help="Verify original bundled Python binaries against this build interpreter",
+    )
     args = parser.parse_args()
-    findings = audit_release(args.release_dir)
+    findings = audit_release(
+        args.release_dir, Path(sys.base_prefix) if args.verify_python_runtime else None
+    )
     if findings:
         for finding in findings:
             print(f"{finding.kind}: {finding.path}")

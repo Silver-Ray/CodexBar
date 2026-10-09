@@ -14,7 +14,7 @@ from typing import Any
 import urllib.parse
 import uuid
 
-from . import diagnostics, runtime, token_usage
+from . import diagnostics, pricing, runtime, token_usage
 
 
 ASSET_DIR = runtime.resource_path("codexbar", "web_assets")
@@ -294,11 +294,13 @@ class DashboardApi:
             "连接本机 Codex 日志",
             "准备价格表和数据库路径",
         )
+        price_status = pricing.refresh_prices()
         days = self.get_days(30)
         self._update_load_progress(job_id, 24, "读取最近日期", "整理最近 30 天")
         selected_date = _date_text(dt.date.today())
         self._update_load_progress(job_id, 38, "计算 token 和花费", "读取今天账单")
         return {
+            "pricing": price_status,
             "days": days,
             "selected": self.get_day(
                 selected_date,
