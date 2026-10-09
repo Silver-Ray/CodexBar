@@ -14,6 +14,11 @@ def main(argv: list[str] | None = None) -> None:
     """Start the single CodexBar taskbar widget instance."""
 
     argv = sys.argv[1:] if argv is None else argv
+    if len(argv) == 2 and argv[0] == "--check-network":
+        from .network_check import write_report
+
+        write_report(argv[1])
+        return
     if "--dashboard" in argv:
         web_dashboard.main()
         return

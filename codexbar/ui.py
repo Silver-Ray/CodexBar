@@ -28,7 +28,7 @@ from .credentials import (
     list_accounts,
     set_active_account,
 )
-from .quota_api import QuotaData, fetch_quota, format_reset_time
+from .quota_api import QuotaData, error_status, fetch_quota, format_reset_time
 from .taskbar_display import RecordedCanvas, TaskbarDisplay
 
 
@@ -162,6 +162,9 @@ class QuotaWidget:
         self._closed = False
         self._restart_requested = False
         self._status_code: str | None = None
+        self._last_success_at: float | None = None
+        self._stale_status: str | None = None
+        self._quota_account_id: str | None = None
         self._context_menu_open = False
         self._context_menu_generation = 0
         self._collapsed = False
@@ -395,6 +398,7 @@ class QuotaWidget:
 
         rows = self.data.get("rows", {})
         usage = self.data.get("usage", {})
+        stale_labels = self._stale_labels() if getattr(self, "_stale_status", None) else None
         row_y = (height * 0.28, height * 0.72)
         for y, key, label in (
             (row_y[0], "h", "5h"),
@@ -404,6 +408,9 @@ class QuotaWidget:
             percent = row.get("remain")
             percent_text = "--" if percent is None else f"{percent:.0f}%"
             reset_text = format_reset_time(row.get("reset")) or "--"
+            if stale_labels:
+                percent_text += "*"
+                reset_text = stale_labels[0 if key == "h" else 1]
             canvas.create_text(
                 self._px(9), round(y), text=label, anchor="w", fill=config.ACCENT, font=self.f_row_label
             )
@@ -557,7 +564,29 @@ class QuotaWidget:
         for key, label in (("h", "5h"), ("w", "每周")):
             percent = rows.get(key, {}).get("remain")
             amounts.append(f"{label} {'--' if percent is None else f'{percent:.0f}%'}")
+        if getattr(self, "_status_code", None):
+            amounts = [self._status_code]
+        elif getattr(self, "_stale_status", None):
+            amounts.append(self._stale_description())
         self._tray_entry.show("CodexBar " + " / ".join(amounts))
+
+    def _stale_labels(self) -> tuple[str, str]:
+        label = {"NET": "网络异常", "TLS": "证书异常"}.get(
+            self._stale_status, "更新异常"
+        )
+        clock = time.strftime("%m/%d %H:%M", time.localtime(self._last_success_at))
+        return f"{label} · 旧数据", f"上次 {clock}"
+
+    def _stale_description(self) -> str:
+        return " · ".join(self._stale_labels())
+
+    def _reset_quota_data(self) -> None:
+        """Forget old-account data and its freshness whenever login changes."""
+        self.data = self._empty_data()
+        self._last_success_at = None
+        self._stale_status = None
+        self._status_code = None
+        self._quota_account_id = None
 
     def _poll_display(self) -> None:
         """Dispatch plain pointer packets on the independent application UI."""
@@ -690,7 +719,7 @@ class QuotaWidget:
     def _switch_account(self, account_id: str) -> None:
         with CREDENTIAL_LOCK:
             set_active_account(account_id)
-        self.data = self._empty_data()
+        self._reset_quota_data()
         self.refresh_async()
 
     def _clear_current_account(self) -> None:
@@ -704,7 +733,7 @@ class QuotaWidget:
         with CREDENTIAL_LOCK:
             delete_account()
         self._invalidate_refresh()
-        self.data = self._empty_data()
+        self._reset_quota_data()
         if list_accounts():
             self.refresh_async()
         else:
@@ -721,7 +750,7 @@ class QuotaWidget:
         with CREDENTIAL_LOCK:
             clear_credentials()
         self._invalidate_refresh()
-        self.data = self._empty_data()
+        self._reset_quota_data()
         self._apply_error("AUTH")
 
     def _invalidate_refresh(self) -> None:
@@ -1429,7 +1458,6 @@ class QuotaWidget:
             self._refresh_after_id = None
         self._refresh_generation += 1
         generation = self._refresh_generation
-        self._status_code = None
         self._redraw()
         if self._refresh_in_progress:
             self._refresh_pending = True
@@ -1448,24 +1476,33 @@ class QuotaWidget:
     def _refresh_worker(self, generation: int | None = None) -> None:
         if generation is None:
             generation = getattr(self, "_refresh_generation", 0)
+        selected_accounts = []
+
+        def post(data, usage, code):
+            self._post_refresh_result(
+                generation, data, usage, code,
+                selected_accounts[0] if selected_accounts else None,
+            )
+
         pricing.refresh_prices()
         try:
-            data = fetch_quota()
+            data = fetch_quota(account_selected=selected_accounts.append)
             try:
                 usage = token_usage.collect_today_usage()
             except Exception as error:
                 diagnostics.log_exception("token_usage", error)
                 usage = None
-            self._post_refresh_result(generation, data, usage, None)
+            post(data, usage, None)
         except AuthRequiredError as error:
             diagnostics.log_exception("quota_refresh", error, status="AUTH")
-            self._post_refresh_result(generation, None, None, "AUTH")
+            post(None, None, "AUTH")
         except ReloginRequiredError as error:
             diagnostics.log_exception("quota_refresh", error, status="RELOGIN")
-            self._post_refresh_result(generation, None, None, "RELOGIN")
+            post(None, None, "RELOGIN")
         except Exception as error:
-            diagnostics.log_exception("quota_refresh", error, status="ERR")
-            self._post_refresh_result(generation, None, None, "ERR")
+            code = error_status(error)
+            diagnostics.log_exception("quota_refresh", error, status=code)
+            post(None, None, code)
 
     def _post_refresh_result(
         self,
@@ -1473,6 +1510,7 @@ class QuotaWidget:
         data: QuotaData | None,
         usage: token_usage.TokenUsageData | None,
         error_code: str | None,
+        account_id: str | None = None,
     ) -> None:
         """Marshal one worker result back to Tk unless shutdown has begun."""
 
@@ -1486,6 +1524,7 @@ class QuotaWidget:
                 data,
                 usage,
                 error_code,
+                account_id,
             )
         except (tk.TclError, RuntimeError):
             return
@@ -1496,6 +1535,7 @@ class QuotaWidget:
         data: QuotaData | None,
         usage: token_usage.TokenUsageData | None,
         error_code: str | None,
+        account_id: str | None = None,
     ) -> None:
         """Apply only the newest result, then run one coalesced pending refresh."""
 
@@ -1504,6 +1544,11 @@ class QuotaWidget:
             return
 
         if generation == self._refresh_generation:
+            if account_id is not None and account_id != getattr(self, "_quota_account_id", None):
+                # resolve_credentials can also select a new Desktop login, even
+                # when the user has not used this widget's account menu.
+                self._reset_quota_data()
+                self._quota_account_id = account_id
             if error_code:
                 self._apply_error(error_code)
             elif data is not None:
@@ -1527,6 +1572,9 @@ class QuotaWidget:
         usage: token_usage.TokenUsageData | None = None,
     ) -> None:
         self._status_code = None
+        self._last_success_at = time.time()
+        self._stale_status = None
+        diagnostics.log_event("quota_refresh_success")
         token_text = token_usage.format_token_millions(
             usage["total_tokens"] if usage else 0
         )
@@ -1559,8 +1607,15 @@ class QuotaWidget:
         self._redraw()
 
     def _apply_error(self, code: str) -> None:
-        self._status_code = code
-        self._refresh_after_id = self.root.after(60 * 1000, self.refresh_async)
+        if code in ("AUTH", "RELOGIN", "HTTP401", "HTTP403"):
+            self._reset_quota_data()
+        if getattr(self, "_last_success_at", None) is not None:
+            self._stale_status = code
+            self._status_code = None
+        else:
+            self._stale_status = None
+            self._status_code = code
+        self._schedule_next(1)
         self._position_at_taskbar()
         self._redraw()
 

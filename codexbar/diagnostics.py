@@ -15,7 +15,7 @@ import re
 import traceback
 import urllib.error
 
-from . import config
+from . import __version__, config
 
 
 SENSITIVE_KEYWORDS = (
@@ -59,6 +59,8 @@ def log_event(event: str, **fields) -> None:
         .isoformat()
         .replace("+00:00", "Z"),
         "event": event,
+        "version": __version__,
+        "pid": os.getpid(),
     }
     for key, value in fields.items():
         record[key] = _sanitize_value(key, value)

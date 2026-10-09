@@ -1,6 +1,6 @@
 [project]
 name = "codexbar"
-version = "0.3.0"
+version = "0.3.1"
 description = "CodexBar is a privacy-conscious Windows taskbar widget for Codex quota and local token usage."
 readme = "README.md"
 requires-python = ">=3.13"

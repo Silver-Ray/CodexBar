@@ -679,7 +679,7 @@ class DiagnosticsLoggingTests(unittest.TestCase):
                 ui.QuotaWidget._refresh_worker(widget)
         log_exception.assert_called_once()
         self.assertEqual(log_exception.call_args.args[0], "quota_refresh")
-        self.assertEqual(widget.root.calls[0][-1], "ERR")
+        self.assertEqual(widget.root.calls[0][-2:], ("ERR", None))
 
     def test_open_error_log_creates_log_before_opening(self):
         widget = object.__new__(ui.QuotaWidget)

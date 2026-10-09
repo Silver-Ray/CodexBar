@@ -7,16 +7,18 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import ssl
 import time
 from typing import TypedDict
+from collections.abc import Callable
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import config
+from . import config, diagnostics
 from .credentials import (
     CREDENTIAL_LOCK,
     Credentials,
@@ -39,6 +41,26 @@ class QuotaData(TypedDict):
 
 FIVE_HOURS_SECONDS = 5 * 60 * 60
 WEEK_SECONDS = 7 * 24 * 60 * 60
+USAGE_RETRY_DELAYS = (1, 2)
+
+
+def error_status(error: BaseException) -> str:
+    """Classify failures without exposing URLs, credentials or response bodies."""
+    if isinstance(error, urllib.error.HTTPError):
+        return f"HTTP{error.code}"
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    if isinstance(reason, ssl.SSLError):
+        return "TLS"
+    if isinstance(error, (urllib.error.URLError, ConnectionError, TimeoutError,
+                          http.client.RemoteDisconnected, http.client.IncompleteRead)):
+        return "NET"
+    return "ERR"
+
+
+def _retryable(error: BaseException) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in (408, 500, 502, 503, 504)
+    return error_status(error) == "NET"
 
 
 def _resolve_ca_bundle() -> str | None:
@@ -116,7 +138,7 @@ def refresh_credentials(credentials: Credentials) -> Credentials:
     return updated
 
 
-def fetch_quota() -> QuotaData:
+def fetch_quota(*, account_selected: Callable[[str], None] | None = None) -> QuotaData:
     """查询 5 小时和每周额度，返回剩余百分比与重置时间。"""
 
     # Only vault access is serialized. Holding this lock during HTTP would
@@ -125,6 +147,8 @@ def fetch_quota() -> QuotaData:
         credentials = resolve_credentials()
     token = credentials["access_token"]
     account_id = credentials["account_id"]
+    if account_selected:
+        account_selected(account_id)
 
     expires_at = decode_jwt_exp(token)
     if expires_at and expires_at - time.time() < config.TOKEN_SKEW_SEC:
@@ -140,8 +164,20 @@ def fetch_quota() -> QuotaData:
                 "ChatGPT-Account-Id": account_id,
             },
         )
-        with _build_opener().open(request, timeout=15) as response:
-            return json.load(response)
+        for attempt in range(len(USAGE_RETRY_DELAYS) + 1):
+            try:
+                with _build_opener().open(request, timeout=15) as response:
+                    return json.load(response)
+            except Exception as error:
+                if not _retryable(error) or attempt == len(USAGE_RETRY_DELAYS):
+                    raise
+                diagnostics.log_event(
+                    "quota_retry", next_attempt=attempt + 2,
+                    status=error_status(error), error_type=type(error).__name__,
+                )
+                # Only the read-only usage GET is replayed. OAuth refresh POSTs
+                # rotate credentials and must never be retried blindly.
+                time.sleep(USAGE_RETRY_DELAYS[attempt])
 
     try:
         data = call_usage(token)

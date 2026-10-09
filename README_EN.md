@@ -176,6 +176,24 @@ use.
 
 ## Diagnostics
 
+Connection failures show `NET`, certificate failures show `TLS`, and HTTP failures show
+their status. Read-only quota GETs retry connection failures and selected temporary HTTP
+errors up to three times, with 1- and 2-second delays. OAuth refresh POSTs are not replayed.
+After a successful query, refresh failures preserve the last quota with `*` percentages
+and an error/last-update time in the full view, retrying every minute. Successful refreshes
+clear that warning. Account changes and authentication failures discard the old quota.
+
+To check the actual packaged network runtime without closing the widget, run in PowerShell:
+
+```powershell
+.\CodexBar.exe --check-network "$env:TEMP\CodexBar-network.json"
+Get-Content "$env:TEMP\CodexBar-network.json"
+```
+
+This queries quota using the current login and its normal credential-refresh flow. The
+report includes runtime versions, configured proxy protocols, result status and duration;
+it excludes credentials, accounts, proxy URLs and API response bodies.
+
 `ERR` indicates an unexpected refresh error, often a temporary proxy, network, upstream HTTP,
 or local-file condition. The taskbar menu can open the local error log or export a sanitized
 diagnostic report. Sanitization is defense in depth, so inspect every report before sharing it.

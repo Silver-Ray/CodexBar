@@ -437,6 +437,15 @@ Get-Content .\CodexBar-Windows-x64.zip.sha256
 
 ## ERR 诊断日志
 
+连接中断或超时显示 `NET`，证书校验失败显示 `TLS`，HTTP 错误显示对应状态（例如
+`HTTP403`）；登录问题继续显示 `AUTH` 或 `RELOGIN`。只读额度请求在连接中断、超时
+或部分 HTTP 5xx 错误时最多请求 3 次，间隔 1 秒、2 秒；不会重复提交 OAuth 刷新请求。
+
+已有成功查询时，刷新失败保留本次运行中最后一次成功的额度，用 `*` 标注百分比，
+展开后显示异常与上次成功时间，每分钟重试。正在刷新时继续保留异常标记，成功后
+清除；切换或清除账号、登录失效时不会保留旧账号的额度。首次查询失败时显示错误状态，
+不伪造额度。
+
 任务栏小组件短暂显示 `ERR` 通常表示额度刷新线程遇到了未归类异常。常见来源包括：
 
 - 代理或网络短暂失败。
@@ -455,6 +464,17 @@ CodexBar 会把这些异常写到：
 包含时间、阶段、异常类型、HTTP 状态和简短堆栈。日志会自动轮转为 `error.log.1`，
 并且会脱敏 `access_token`、`refresh_token`、`id_token` 和 `Authorization` 内容。
 也可以使用 `导出脱敏诊断...` 生成适合附到 Issue 的文本副本。
+
+排查源码与打包版的网络差异时，可在 PowerShell 中运行：
+
+```powershell
+.\CodexBar.exe --check-network "$env:TEMP\CodexBar-network.json"
+Get-Content "$env:TEMP\CodexBar-network.json"
+```
+
+该检查可与任务栏实例同时运行，使用当前账号查询额度并按正常流程刷新登录。报告仅包含
+版本、Python/TLS 运行时、代理协议是否配置、查询状态和耗时，不包含账号、凭据、
+代理地址或接口响应正文。
 
 ## 卸载
 
