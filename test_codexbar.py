@@ -397,6 +397,9 @@ class GitHubAutomationContractTests(unittest.TestCase):
         self.assertIn("build_exe.ps1", ci)
 
         self.assertIn("tags:\n      - \"v*\"", release)
+        self.assertIn("workflow_dispatch:", release)
+        self.assertIn("RELEASE_TAG: ${{ inputs.tag || github.ref_name }}", release)
+        self.assertIn("ref: ${{ inputs.tag || github.ref }}", release)
         self.assertIn("contents: write", release)
         self.assertIn("GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}", release)
         self.assertIn("gh release create", release)

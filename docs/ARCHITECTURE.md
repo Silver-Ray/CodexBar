@@ -135,4 +135,4 @@ CodexBar 自有文件位于 `%LOCALAPPDATA%\CodexBar`：
 原始文件逐字节核对；仅完全一致的原生运行库可保留上游编译机路径。修改过的二进制、
 应用文件和所有凭据匹配仍会被拦截。独立调用审计时默认仍严格检查全部路径。
 
-GitHub Actions 的 CI 在 main 推送、PR 和手动触发时运行全部测试、源码编译和 Windows 构建审计，并保留 ZIP 与 SHA-256 构建产物。Release 工作流在 `v*` 标签推送时验证标签和项目版本一致，完整检查通过后发布到当前仓库的 Releases；`docs/releases/<tag>.md` 提供对应版本的发布说明。工作流使用固定 SHA 的 Actions 和最小权限，原生命令失败会停止发布。
+GitHub Actions 的 CI 在 main 推送、PR 和手动触发时运行全部测试、源码编译和 Windows 构建审计，并保留 ZIP 与 SHA-256 构建产物。Release 工作流在 `v*` 标签推送或手动选择已有标签时，检出相应源码并验证实际版本，完整检查通过后发布到当前仓库的 Releases；`docs/releases/<tag>.md` 提供对应版本的发布说明。工作流使用固定 SHA 的 Actions 和最小权限，原生命令失败会停止发布。维护流程见 `docs/RELEASING.md`。
