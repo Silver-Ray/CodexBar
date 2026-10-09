@@ -11,7 +11,8 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(ROOT / "codexbar" / "web_assets"), "codexbar/web_assets"),
-        (str(ROOT / "codexbar" / "assets"), "codexbar/assets"),
+        *[(str(asset), "codexbar/assets")
+          for asset in (ROOT / "codexbar" / "assets").iterdir() if asset.is_file()],
     ],
     hiddenimports=[
         "webview",

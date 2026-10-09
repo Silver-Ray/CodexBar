@@ -31,6 +31,7 @@ $ExePath = Join-Path $DistAppDir "CodexBar.exe"
 $DashboardAsset = Join-Path $DistAppDir "_internal\codexbar\web_assets\dashboard.html"
 $IconAsset = Join-Path $DistAppDir "_internal\codexbar\assets\codexbar.ico"
 $PublicPriceAsset = Join-Path $DistAppDir "_internal\codexbar\assets\official_model_prices.json"
+$RemoteProbeAsset = Join-Path $DistAppDir "_internal\codexbar\assets\remote_usage_probe.py"
 
 # Check before deleting anything: a running release can lock only some files,
 # leaving an unusable half-removed bundle if cleanup silently continues.
@@ -73,6 +74,9 @@ if (-not (Test-Path -LiteralPath $IconAsset)) {
 }
 if (-not (Test-Path -LiteralPath $PublicPriceAsset)) {
     throw "Build failed: the public offline pricing snapshot was not bundled."
+}
+if (-not (Test-Path -LiteralPath $RemoteProbeAsset)) {
+    throw "Build failed: the SSH accounting probe was not bundled."
 }
 
 $ReleaseDocuments = @(

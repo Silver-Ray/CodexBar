@@ -4,30 +4,54 @@ const state = {
   range: null,
   period: "week",
   pricing: null,
+  sourceId: "local",
+  source: null,
 };
 let activeLoadJobId = null;
 let dayRequestGeneration = 0;
 let periodRequestGeneration = 0;
 let chartResizeTimer = null;
+let loadRequestGeneration = 0;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 window.addEventListener("pywebviewready", async () => {
   bindActions();
+  await loadSources();
   await loadInitial();
 });
 
-async function loadInitial() {
+async function loadSources() {
+  const sources = await window.pywebview.api.get_sources();
+  const select = document.getElementById("sourceSelect");
+  select.replaceChildren();
+  sources.forEach((source) => {
+    const option = document.createElement("option");
+    option.value = source.id;
+    option.textContent = source.remote ? `${source.label} · SSH` : source.label;
+    select.appendChild(option);
+  });
+  select.value = state.sourceId;
+}
+
+async function loadInitial(refresh = false) {
+  const generation = ++loadRequestGeneration;
+  const sourceId = state.sourceId;
+  activeLoadJobId = null;
+  ++dayRequestGeneration;
+  ++periodRequestGeneration;
   showLoading({
     state: "running",
     percent: 1,
-    stage: "连接本机 Codex 日志",
-    detail: "准备读取 SQLite 和 rollout",
+    stage: sourceId === "local" ? "连接本机 Codex 日志" : "连接 SSH 远程主机",
+    detail: sourceId === "local" ? "准备读取 SQLite 和 rollout" : "后台读取会话用量，最长等待 30 秒",
   });
   try {
-    const starter = await window.pywebview.api.start_initial_load();
+    const starter = await window.pywebview.api.start_initial_load(sourceId, refresh);
+    if (generation !== loadRequestGeneration) return;
     activeLoadJobId = starter.job_id;
     await pollInitialLoad(starter.job_id);
   } catch (error) {
+    if (generation !== loadRequestGeneration) return;
     showLoadingError(error?.message || String(error || "加载失败"));
   }
 }
@@ -41,8 +65,20 @@ function bindActions() {
     if (!state.days.length) return;
     await selectDay(state.days[0].date);
   });
-  document.getElementById("refreshButton").addEventListener("click", loadInitial);
-  document.getElementById("loadingRetryButton").addEventListener("click", loadInitial);
+  document.getElementById("refreshButton").addEventListener("click", async () => {
+    await loadSources();
+    await loadInitial(true);
+  });
+  document.getElementById("loadingRetryButton").addEventListener("click", () => loadInitial(true));
+  document.getElementById("sourceSelect").addEventListener("change", async (event) => {
+    state.sourceId = event.target.value;
+    await loadInitial();
+  });
+  document.getElementById("loadingLocalButton").addEventListener("click", async () => {
+    state.sourceId = "local";
+    document.getElementById("sourceSelect").value = "local";
+    await loadInitial();
+  });
   document.querySelectorAll(".period").forEach((button) => {
     button.addEventListener("click", async () => {
       const requestedPeriod = button.dataset.period;
@@ -50,10 +86,17 @@ function bindActions() {
       state.period = requestedPeriod;
       document.querySelectorAll(".period").forEach((item) => item.classList.remove("active"));
       button.classList.add("active");
-      const range = await window.pywebview.api.get_range(requestedPeriod);
-      if (requestGeneration !== periodRequestGeneration || state.period !== requestedPeriod) return;
-      state.range = range;
-      renderChart();
+      const sourceId = state.sourceId;
+      try {
+        const range = await window.pywebview.api.get_range(requestedPeriod, sourceId);
+        if (requestGeneration !== periodRequestGeneration || state.period !== requestedPeriod || state.sourceId !== sourceId) return;
+        state.range = range;
+        state.source = range.source;
+        renderSourceStatus();
+        renderChart();
+      } catch (error) {
+        if (requestGeneration === periodRequestGeneration) showLoadingError(error?.message || String(error));
+      }
     });
   });
 }
@@ -68,6 +111,11 @@ async function pollInitialLoad(jobId) {
       state.selected = status.result?.selected;
       state.range = status.result?.range;
       state.pricing = status.result?.pricing;
+      state.source = status.result?.source;
+      state.period = "week";
+      document.querySelectorAll(".period").forEach((button) => {
+        button.classList.toggle("active", button.dataset.period === "week");
+      });
       renderAll();
       hideLoading();
       return;
@@ -114,15 +162,32 @@ function sleep(ms) {
 
 async function selectDay(date) {
   const requestGeneration = ++dayRequestGeneration;
-  const selected = await window.pywebview.api.get_day(date);
-  if (requestGeneration !== dayRequestGeneration) return;
-  state.selected = selected;
-  renderReceipt();
-  renderConversations();
-  renderDayList();
+  const sourceId = state.sourceId;
+  try {
+    const selected = await window.pywebview.api.get_day(date, sourceId);
+    if (requestGeneration !== dayRequestGeneration || sourceId !== state.sourceId) return;
+    state.selected = selected;
+    state.source = selected.source;
+    renderSourceStatus();
+    renderReceipt();
+    renderConversations();
+    renderDayList();
+  } catch (error) {
+    if (requestGeneration === dayRequestGeneration) showLoadingError(error?.message || String(error));
+  }
+}
+
+function renderSourceStatus() {
+  const source = state.source;
+  const node = document.getElementById("sourceStatus");
+  const fetched = source?.fetched_at ? new Date(source.fetched_at * 1000).toLocaleString() : "";
+  node.classList.toggle("stale", Boolean(source?.stale));
+  node.textContent = `数据来源：${source?.label || "本机"}${source?.remote ? " · SSH" : ""}` +
+    `${fetched ? ` · 上次读取 ${fetched}` : ""}${source?.stale ? ` · ${source.error}；显示缓存` : ""}`;
 }
 
 function renderAll() {
+  renderSourceStatus();
   const prices = state.pricing;
   const date = prices?.fetched_at ? new Date(prices.fetched_at * 1000).toLocaleDateString() : "--";
   const mode = prices?.using_snapshot ? "离线价格快照" : "官网价格";

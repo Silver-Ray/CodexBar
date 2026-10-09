@@ -25,7 +25,8 @@ body {
   margin: 0;
   height: 100%;
   padding: 22px 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background:
     linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px) 0 0 / 32px 32px,
     linear-gradient(180deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px) 0 0 / 32px 32px,
@@ -46,6 +47,38 @@ button {
 
 button:hover {
   border-color: var(--cyan);
+}
+
+.source-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.source-picker select {
+  max-width: 230px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  font: inherit;
+}
+
+#sourceStatus {
+  margin-top: 6px;
+  max-width: 760px;
+}
+
+#sourceStatus.stale {
+  color: var(--amber);
+}
+
+#loadingLocalButton {
+  margin-top: 18px;
+  margin-left: 8px;
 }
 
 .loading-overlay {
@@ -633,7 +666,7 @@ h1 {
   font: 12px "Cascadia Mono", Consolas, monospace;
 }
 
-@media (max-height: 900px) {
+@media (max-height: 1000px) {
   body {
     padding: 14px 0;
   }

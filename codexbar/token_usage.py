@@ -1202,10 +1202,9 @@ def _conversation_title(record: dict, display_titles: dict[str, str] | None = No
 def _cwd_label(value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         return ""
-    try:
-        return Path(value).name or value.strip()
-    except OSError:
-        return value.strip()
+    # Remote POSIX paths must also display their final component on Windows.
+    clean = value.strip().rstrip("/\\").replace("\\", "/")
+    return clean.rsplit("/", 1)[-1] or value.strip()
 
 
 def _local_date(timestamp: object) -> dt.date | None:

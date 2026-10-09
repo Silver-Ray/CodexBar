@@ -14,7 +14,7 @@ from typing import Any
 import urllib.parse
 import uuid
 
-from . import diagnostics, pricing, runtime, token_usage
+from . import diagnostics, pricing, remote_usage, runtime, token_usage
 
 
 ASSET_DIR = runtime.resource_path("codexbar", "web_assets")
@@ -217,15 +217,36 @@ class DashboardApi:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._jobs_lock = threading.Lock()
         self._active_job_id: str | None = None
+        self._sources_lock = threading.Lock()
+        self._remote_sources: dict[str, remote_usage.RemoteUsageSource] = {}
 
-    def start_initial_load(self) -> dict[str, str]:
+    def get_sources(self) -> list[dict]:
+        return remote_usage.discover_sources()
+
+    def _usage_source(self, source_id: str):
+        if source_id == "local":
+            return self.token_usage
+        with self._sources_lock:
+            if source_id not in self._remote_sources:
+                source = next((item for item in self.get_sources() if item["id"] == source_id), None)
+                if source is None or not source.get("remote"):
+                    raise ValueError("未知的用量数据源，请刷新主机列表")
+                self._remote_sources[source_id] = remote_usage.RemoteUsageSource(source_id[4:], source["label"])
+            return self._remote_sources[source_id]
+
+    def _source_status(self, source_id: str) -> dict:
+        if source_id == "local":
+            return {"id": "local", "label": "本机", "remote": False, "stale": False, "error": ""}
+        return self._usage_source(source_id).status()
+
+    def start_initial_load(self, source_id: str = "local", refresh: bool = False) -> dict[str, str]:
         """Start a background dashboard load and return a pollable job id."""
 
         with self._jobs_lock:
-            if self._active_job_id:
-                active = self._jobs.get(self._active_job_id)
-                if active and active.get("state") == "running":
-                    return {"job_id": self._active_job_id}
+            for existing_id, active in self._jobs.items():
+                if active.get("state") == "running" and active.get("source_id", "local") == source_id:
+                    self._active_job_id = existing_id
+                    return {"job_id": existing_id}
             job_id = uuid.uuid4().hex
             self._active_job_id = job_id
             self._jobs[job_id] = {
@@ -235,10 +256,11 @@ class DashboardApi:
                 "detail": "准备读取 SQLite 和 rollout",
                 "result": None,
                 "error": "",
+                "source_id": source_id,
             }
         thread = threading.Thread(
             target=self._run_initial_load_job,
-            args=(job_id,),
+            args=(job_id, source_id, refresh),
             daemon=True,
         )
         thread.start()
@@ -260,9 +282,13 @@ class DashboardApi:
                 }
             return status.copy()
 
-    def _run_initial_load_job(self, job_id: str) -> None:
+    def _run_initial_load_job(self, job_id: str, source_id: str = "local", refresh: bool = False) -> None:
         try:
-            result = self._build_initial_state(job_id=job_id)
+            source = self._usage_source(source_id)
+            if source_id != "local":
+                self._update_load_progress(job_id, 3, "读取 SSH 远程会话", "连接主机并读取 token 记录（最长 30 秒）")
+                source.refresh(force=refresh)
+            result = self._build_initial_state(job_id=job_id, source_id=source_id)
             self._set_job_status(
                 job_id,
                 state="done",
@@ -284,22 +310,22 @@ class DashboardApi:
                 error=diagnostics.sanitize_text(str(error)),
             )
 
-    def get_initial_state(self) -> dict[str, Any]:
-        return self._build_initial_state()
+    def get_initial_state(self, source_id: str = "local") -> dict[str, Any]:
+        return self._build_initial_state(source_id=source_id)
 
-    def _build_initial_state(self, job_id: str | None = None) -> dict[str, Any]:
+    def _build_initial_state(self, job_id: str | None = None, source_id: str = "local") -> dict[str, Any]:
         self._update_load_progress(
             job_id,
             6,
-            "连接本机 Codex 日志",
+            "读取 Codex 会话统计",
             "准备价格表和数据库路径",
         )
         price_status = pricing.refresh_prices()
-        days = self.get_days(30)
+        days = self.get_days(30, source_id)
         self._update_load_progress(job_id, 24, "读取最近日期", "整理最近 30 天")
         selected_date = _date_text(dt.date.today())
         self._update_load_progress(job_id, 38, "计算 token 和花费", "读取今天账单")
-        return {
+        result = {
             "pricing": price_status,
             "days": days,
             "selected": self.get_day(
@@ -307,46 +333,53 @@ class DashboardApi:
                 progress_callback=(
                     lambda report: self._update_conversation_progress(job_id, report)
                 ),
+                source_id=source_id,
             ),
-            "range": self._get_initial_range(job_id),
+            "range": self._get_initial_range(job_id, source_id),
         }
+        result["source"] = self._source_status(source_id)
+        return result
 
-    def get_days(self, limit: int = 30) -> list[dict[str, Any]]:
-        data = self.token_usage.collect_usage_days(days=limit)
+    def get_days(self, limit: int = 30, source_id: str = "local") -> list[dict[str, Any]]:
+        data = self._usage_source(source_id).collect_usage_days(days=limit)
         buckets = list(data.get("buckets", []))
         return [serialize_bucket(bucket) for bucket in reversed(buckets)]
 
     def get_day(
         self,
         date: str,
+        source_id: str = "local",
         progress_callback=None,
     ) -> dict[str, Any]:
         target = dt.date.fromisoformat(date)
-        data = self.token_usage.collect_usage_days(days=1, anchor_date=target, use_cache=False)
+        data = self._usage_source(source_id).collect_usage_days(days=1, anchor_date=target, use_cache=False)
         buckets = data.get("buckets", [])
         conversations = [
             build_conversation_row(row)
-            for row in self._collect_thread_usage_for_day(target, progress_callback)
+            for row in self._collect_thread_usage_for_day(target, progress_callback, source_id)
         ]
         if not buckets:
             receipt = build_receipt({"start_date": target})
         else:
             receipt = build_receipt(buckets[-1])
         receipt["conversations"] = conversations
+        receipt["source"] = self._source_status(source_id)
         return receipt
 
-    def get_range(self, period: str) -> dict[str, Any]:
+    def get_range(self, period: str, source_id: str = "local") -> dict[str, Any]:
         clean_period = period if period in ("week", "month", "year") else "week"
-        return serialize_range(self.token_usage.collect_usage_range(clean_period))
+        result = serialize_range(self._usage_source(source_id).collect_usage_range(clean_period))
+        result["source"] = self._source_status(source_id)
+        return result
 
-    def _get_initial_range(self, job_id: str | None) -> dict[str, Any]:
+    def _get_initial_range(self, job_id: str | None, source_id: str = "local") -> dict[str, Any]:
         self._update_load_progress(job_id, 84, "整理趋势图", "计算每周趋势")
-        data = self.get_range("week")
+        data = self.get_range("week", source_id)
         self._update_load_progress(job_id, 94, "整理前端数据", "准备渲染页面")
         return data
 
-    def _collect_thread_usage_for_day(self, target: dt.date, progress_callback=None):
-        method = self.token_usage.collect_thread_usage_for_day
+    def _collect_thread_usage_for_day(self, target: dt.date, progress_callback=None, source_id: str = "local"):
+        method = self._usage_source(source_id).collect_thread_usage_for_day
         parameters = inspect.signature(method).parameters
         if "progress_callback" in parameters:
             return method(target, use_cache=False, progress_callback=progress_callback)

@@ -42,7 +42,7 @@ jobs:
         run: uv run --frozen python -m unittest discover -q
 
       - name: Compile Python sources
-        run: uv run --frozen python -m compileall -q .\codexbar .\codexbar.pyw .\codexbar_dashboard.pyw .\test_codexbar.py .\test_pricing.py .\test_taskbar_display.py
+        run: uv run --frozen python -m compileall -q .\codexbar .\codexbar.pyw .\codexbar_dashboard.pyw .\test_codexbar.py .\test_pricing.py .\test_taskbar_display.py .\test_remote_usage.py
 
       - name: Build and audit Windows release
         shell: pwsh

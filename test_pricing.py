@@ -189,7 +189,7 @@ class OfficialPricingTests(unittest.TestCase):
         api = web_dashboard.DashboardApi()
         order = []
         with mock.patch.object(pricing, "refresh_prices", side_effect=lambda: order.append("pricing") or {"model_count": 4}), mock.patch.object(
-            api, "get_days", side_effect=lambda _: order.append("costs") or []
+            api, "get_days", side_effect=lambda _, source_id: order.append("costs") or []
         ), mock.patch.object(api, "get_day", return_value={}), mock.patch.object(api, "_get_initial_range", return_value={}):
             result = api.get_initial_state()
         self.assertEqual(order, ["pricing", "costs"])

@@ -8,6 +8,17 @@ windows beside the notification area, and build a local token ledger from Codex 
 rollout JSONL files. The ledger includes daily trends, conversation rankings, token categories,
 and an API-equivalent cost estimate.
 
+The usage dashboard also supports Codex Desktop SSH sessions. Select a host under **数据来源**
+(Data source) to see its daily conversation usage and weekly/monthly/yearly trends separately
+from local usage. Hosts come from Codex Desktop connections and concrete aliases in `~/.ssh/config`.
+The Windows OpenSSH client and noninteractive SSH key authentication are required. Linux/macOS
+hosts need Python 3.8+ and Codex logs under `CODEX_HOME` or `~/.codex`.
+Only accounting events, titles, models, and paths are returned over SSH; full message bodies,
+tool output, and credentials are excluded. Remote files are read-only, with no installation on the host.
+Reads run in the background with a 30-second timeout and a 60-second cache. Disconnections keep
+the last snapshot and clearly mark stale data. Refresh forces a new read; **返回本机** returns
+to local usage during loading. Dates use the Windows machine's timezone, and taskbar totals remain local.
+
 <p align="center">
   <img src="docs/images/taskbar-widget.png" alt="CodexBar taskbar widget" width="645">
 </p>

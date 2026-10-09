@@ -11,7 +11,7 @@
   <section id="loadingOverlay" class="loading-overlay visible" aria-live="polite">
     <div class="loading-console">
       <div class="loading-eyebrow">CodexBar scanner</div>
-      <h2>正在索引本机 token 账本</h2>
+      <h2>正在读取 token 账本</h2>
       <div class="loading-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="1">
         <div id="loadingProgressFill" class="loading-progress-fill"></div>
       </div>
@@ -22,6 +22,7 @@
       </div>
       <div id="loadingDetail" class="loading-detail">准备读取 SQLite 和 rollout</div>
       <button id="loadingRetryButton" class="loading-retry" type="button">重试</button>
+      <button id="loadingLocalButton" type="button">返回本机</button>
     </div>
   </section>
 
@@ -30,8 +31,14 @@
       <div>
         <div id="pricingStatus" class="eyebrow">API 等价估算 · 官网价格每日更新</div>
         <h1>Token 用量账本</h1>
+        <div id="sourceStatus" class="muted" aria-live="polite">数据来源：本机</div>
       </div>
       <div class="actions">
+        <label class="source-picker" for="sourceSelect">数据来源
+          <select id="sourceSelect" aria-label="用量数据来源">
+            <option value="local">本机</option>
+          </select>
+        </label>
         <button id="todayButton" type="button">今天</button>
         <button id="refreshButton" type="button">刷新</button>
       </div>

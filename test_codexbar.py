@@ -4013,7 +4013,7 @@ class UsageDashboardFormattingTests(unittest.TestCase):
 
         self.assertIn("overflow-x: hidden;", css)
         self.assertIn("html {\n  height: 100%;\n  overflow: hidden;", css)
-        self.assertIn("height: 100%;\n  padding: 22px 0;\n  overflow: hidden;", css)
+        self.assertIn("height: 100%;\n  padding: 22px 0;\n  overflow-x: hidden;\n  overflow-y: auto;", css)
         self.assertIn("padding: 22px 0;", css)
         self.assertIn("margin: 0 auto;", css)
         self.assertIn("grid-template-columns: 62px minmax(62px, 1fr) 68px;", css)
@@ -4026,7 +4026,7 @@ class UsageDashboardFormattingTests(unittest.TestCase):
         self.assertIn(".trend-svg", css)
         self.assertIn(".chart-line", css)
         self.assertIn(".chart-tooltip", css)
-        self.assertIn("@media (max-height: 900px)", css)
+        self.assertIn("@media (max-height: 1000px)", css)
         self.assertIn("height: 176px;", css)
         self.assertNotIn(".bar-wrap", css)
         self.assertIn("chart.className = `chart ${range.period || state.period}`;", script)
